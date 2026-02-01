@@ -12,7 +12,6 @@ import static net.fabricmc.fabric.api.client.command.v2.ClientCommandManager.*;
 public final class DebugCommands {
     private DebugCommands() {}
 
-    // auf true stellen, wenn du ingame tunen willst
     public static final boolean ENABLED = false;
 
     public static void init() {
