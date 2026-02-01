@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "projectilepreview",
+  "version": "${version}",
+  "name": "ProjectilePreview",
+  "description": "A Duel Plugin by Ryhox",
+  "authors": [],
+  "contact": {},
+  "license": "All-Rights-Reserved",
+  "icon": "assets/projectilepreview/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "fabric-datagen": [
+      "dev.duels.projectilepreview.client.ProjectilepreviewDataGenerator"
+    ],
+    "client": [
+      "dev.duels.projectilepreview.client.ProjectilepreviewClient"
+    ],
+    "main": [
+      "dev.duels.projectilepreview.Projectilepreview"
+    ]
+  },
+  "mixins": [
+    "projectilepreview.mixins.json",
+    {
+      "config": "projectilepreview.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "fabric-api": "*",
+    "minecraft": ">=1.21.2 <1.22"
+  }
+}
