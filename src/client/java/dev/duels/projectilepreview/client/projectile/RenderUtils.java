@@ -22,7 +22,7 @@ public final class RenderUtils {
     private RenderUtils() {}
 
     private static final float LINE_WIDTH = 3.0f;
-    private static final float THICKNESS = 0.006f;
+    private static final float THICKNESS = 0.002f;
 
 
     public static void drawPolyline(MatrixStack matrices, VertexConsumerProvider consumers, List<Vec3d> points, Vec3d camPos) {
