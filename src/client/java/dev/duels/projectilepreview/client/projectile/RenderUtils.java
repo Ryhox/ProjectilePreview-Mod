@@ -1,6 +1,8 @@
 package dev.duels.projectilepreview.client.projectile;
 
 import com.mojang.blaze3d.systems.RenderSystem;
+import net.minecraft.block.BlockState;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.render.VertexConsumer;
 import net.minecraft.client.render.VertexConsumerProvider;
 import net.minecraft.client.util.math.MatrixStack;
@@ -9,9 +11,12 @@ import net.minecraft.entity.mob.HostileEntity;
 import net.minecraft.entity.passive.PassiveEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.util.shape.VoxelShape;
+import net.minecraft.util.shape.VoxelShapes;
 import org.joml.Matrix4f;
 
 import java.util.List;
@@ -21,9 +26,14 @@ import static dev.duels.projectilepreview.client.projectile.TrajectorySim.ENTITY
 public final class RenderUtils {
     private RenderUtils() {}
 
-    private static final float LINE_WIDTH = 3.0f;
-    private static final float THICKNESS = 0.002f;
+    private static final float TRAJ_THICKNESS = 0.002f;
 
+    private static final float OUTLINE_THICKNESS = 0.01f;
+
+    private static final float FACE_EPS = 0.0008f;
+
+
+    private static final double OUTLINE_PUSH = 0.0006;
 
     public static void drawPolyline(MatrixStack matrices, VertexConsumerProvider consumers, List<Vec3d> points, Vec3d camPos) {
         if (points.size() < 2) return;
@@ -34,58 +44,105 @@ public final class RenderUtils {
         for (int i = 0; i < points.size() - 1; i++) {
             Vec3d a = points.get(i).subtract(camPos);
             Vec3d b = points.get(i + 1).subtract(camPos);
-            addThickLine(vc, m, a, b, THICKNESS, 255, 255, 255, 255);
-
+            addThickLine(vc, m, a, b, TRAJ_THICKNESS, 255, 255, 255, 255);
         }
     }
-
 
     public static void drawHitOverlay(MatrixStack matrices, VertexConsumerProvider consumers, TrajectorySim.HitInfo hit, Vec3d camPos) {
         if (hit == null) return;
 
         int aFill = 80;
-        int aLine = 220;
+        int aLine = 255;
 
-        if (hit instanceof TrajectorySim.HitInfo.BlockHit bh) {
-            BlockHitResult bhr = bh.bhr();
+        // IMPORTANT:
+        // Your outline quads sit exactly on block surfaces -> depth test makes them flicker/disappear.
+        // We render overlays with depth test OFF + depthMask OFF so they are always visible,
+        // but still “tight” because we do NOT inflate the voxelshape (only a micro OUTLINE_PUSH).
+        RenderSystem.enableBlend();
+        RenderSystem.disableCull();
+        RenderSystem.disableDepthTest();
+        RenderSystem.depthMask(false);
 
-            Box bbWorld = bh.hitBoxWorld();
-            Box bbCam = bbWorld.offset(-camPos.x, -camPos.y, -camPos.z).expand(0.002);
-            Vec3d hitPosCam = hit.pos().subtract(camPos);
+        try {
+            if (hit instanceof TrajectorySim.HitInfo.BlockHit bh) {
+                BlockHitResult bhr = bh.bhr();
 
-            drawFaceFillAndOutline(matrices, consumers, bbCam, hitPosCam, 80, 160, 255, aFill, aLine);
-            return;
-        }
+                MinecraftClient mc = MinecraftClient.getInstance();
+                if (mc.world == null) return;
 
-        if (hit instanceof TrajectorySim.HitInfo.EntityHit eh) {
-            Entity e = eh.entity();
+                BlockPos pos = bhr.getBlockPos();
+                BlockState state = mc.world.getBlockState(pos);
 
-            Box bbWorld = e.getBoundingBox().expand(ENTITY_HITBOX_PAD);
-            Box bbCam = bbWorld.offset(-camPos.x, -camPos.y, -camPos.z).expand(0.002);
-            Vec3d hitPosCam = hit.pos().subtract(camPos);
+                VoxelShape shape = state.getOutlineShape(mc.world, pos, net.minecraft.block.ShapeContext.absent());
+                if (shape == null || shape.isEmpty()) shape = VoxelShapes.fullCube();
 
-            int[] col = colorForEntity(e);
-            drawFaceFillAndOutline(matrices, consumers, bbCam, hitPosCam, col[0], col[1], col[2], aFill, aLine);
+                Vec3d hitPosCam = hit.pos().subtract(camPos);
+
+                // Fill: only the closest sub-box face (avoids filling random internal stair pieces)
+                Box closest = null;
+                double bestD2 = Double.POSITIVE_INFINITY;
+
+                for (Box local : shape.getBoundingBoxes()) {
+                    Box worldBox = local.offset(pos.getX(), pos.getY(), pos.getZ());
+                    Box camBox = worldBox.offset(-camPos.x, -camPos.y, -camPos.z);
+
+                    double d2 = dist2PointToBox(hitPosCam, camBox);
+                    if (d2 < bestD2) {
+                        bestD2 = d2;
+                        closest = camBox;
+                    }
+                }
+
+                if (closest != null) {
+                    drawFaceFill(matrices, consumers, closest, hitPosCam, 80, 160, 255, aFill);
+                }
+
+                // Outline: draw ALL sub-boxes (whole stair / slab / shape)
+                // We push outward slightly so it’s not “inside” the block surface.
+                for (Box local : shape.getBoundingBoxes()) {
+                    Box worldBox = local.offset(pos.getX(), pos.getY(), pos.getZ());
+                    Box camBox = worldBox.offset(-camPos.x, -camPos.y, -camPos.z);
+
+                    Box outlineBox = camBox.expand(OUTLINE_PUSH);
+                    drawOutline(matrices, consumers, outlineBox, OUTLINE_THICKNESS, 80, 160, 255, aLine);
+                }
+
+                return;
+            }
+
+            if (hit instanceof TrajectorySim.HitInfo.EntityHit eh) {
+                Entity e = eh.entity();
+
+                Box bbWorld = e.getBoundingBox().expand(ENTITY_HITBOX_PAD);
+                Box bbCam = bbWorld.offset(-camPos.x, -camPos.y, -camPos.z);
+                Vec3d hitPosCam = hit.pos().subtract(camPos);
+
+                int[] col = colorForEntity(e);
+
+                drawFaceFill(matrices, consumers, bbCam, hitPosCam, col[0], col[1], col[2], aFill);
+
+                Box outlineBox = bbCam.expand(OUTLINE_PUSH);
+                drawOutline(matrices, consumers, outlineBox, OUTLINE_THICKNESS, col[0], col[1], col[2], aLine);
+            }
+        } finally {
+            // Restore render state so you don’t break other rendering
+            RenderSystem.depthMask(true);
+            RenderSystem.enableDepthTest();
+            RenderSystem.enableCull();
         }
     }
 
-    private static void drawFaceFillAndOutline(
+    private static void drawFaceFill(
             MatrixStack matrices,
             VertexConsumerProvider consumers,
             Box bbCam,
             Vec3d hitPosCam,
             int r, int g, int b,
-            int aFill,
-            int aLine
+            int aFill
     ) {
         Direction face = nearestFace(bbCam, hitPosCam);
-
         VertexConsumer fill = consumers.getBuffer(PreviewRenderLayers.FILLED_QUADS);
-        drawFaceQuad(matrices, fill, bbCam, face, r, g, b, aFill);
-
-        RenderSystem.lineWidth(LINE_WIDTH);
-        drawOutline(matrices, consumers, bbCam, THICKNESS, r, g, b, aLine);
-        RenderSystem.lineWidth(1.0f);
+        drawFaceQuad(matrices, fill, bbCam, face, r, g, b, aFill, FACE_EPS);
     }
 
     private static void drawOutline(
@@ -124,8 +181,6 @@ public final class RenderUtils {
         addThickLine(vc, m, p101, p111, thickness, r, g, bl, aLine);
     }
 
-
-
     private static Direction nearestFace(Box b, Vec3d hit) {
         double dxMin = Math.abs(hit.x - b.minX);
         double dxMax = Math.abs(hit.x - b.maxX);
@@ -146,8 +201,14 @@ public final class RenderUtils {
         return best;
     }
 
-    private static void drawFaceQuad(MatrixStack matrices, VertexConsumer vc, Box b, Direction face,
-                                     int r, int g, int bl, int a) {
+    private static void drawFaceQuad(
+            MatrixStack matrices,
+            VertexConsumer vc,
+            Box b,
+            Direction face,
+            int r, int g, int bl, int a,
+            float eps
+    ) {
         Matrix4f m = matrices.peek().getPositionMatrix();
 
         float x1 = (float) b.minX, x2 = (float) b.maxX;
@@ -155,21 +216,24 @@ public final class RenderUtils {
         float z1 = (float) b.minZ, z2 = (float) b.maxZ;
 
         switch (face) {
-            case WEST  -> quad(vc, m, x1,y1,z1, x1,y2,z1, x1,y2,z2, x1,y1,z2, r,g,bl,a);
-            case EAST  -> quad(vc, m, x2,y1,z2, x2,y2,z2, x2,y2,z1, x2,y1,z1, r,g,bl,a);
-            case NORTH -> quad(vc, m, x2,y1,z1, x2,y2,z1, x1,y2,z1, x1,y1,z1, r,g,bl,a);
-            case SOUTH -> quad(vc, m, x1,y1,z2, x1,y2,z2, x2,y2,z2, x2,y1,z2, r,g,bl,a);
-            case DOWN  -> quad(vc, m, x1,y1,z2, x2,y1,z2, x2,y1,z1, x1,y1,z1, r,g,bl,a);
-            case UP    -> quad(vc, m, x1,y2,z1, x2,y2,z1, x2,y2,z2, x1,y2,z2, r,g,bl,a);
+            case WEST  -> { float x = x1 - eps; quad(vc, m, x,y1,z1, x,y2,z1, x,y2,z2, x,y1,z2, r,g,bl,a); }
+            case EAST  -> { float x = x2 + eps; quad(vc, m, x,y1,z2, x,y2,z2, x,y2,z1, x,y1,z1, r,g,bl,a); }
+            case NORTH -> { float z = z1 - eps; quad(vc, m, x2,y1,z, x2,y2,z, x1,y2,z, x1,y1,z, r,g,bl,a); }
+            case SOUTH -> { float z = z2 + eps; quad(vc, m, x1,y1,z, x1,y2,z, x2,y2,z, x2,y1,z, r,g,bl,a); }
+            case DOWN  -> { float y = y1 - eps; quad(vc, m, x1,y,z2, x2,y,z2, x2,y,z1, x1,y,z1, r,g,bl,a); }
+            case UP    -> { float y = y2 + eps; quad(vc, m, x1,y,z1, x2,y,z1, x2,y,z2, x1,y,z2, r,g,bl,a); }
         }
     }
 
-    private static void quad(VertexConsumer vc, Matrix4f m,
-                             float ax,float ay,float az,
-                             float bx,float by,float bz,
-                             float cx,float cy,float cz,
-                             float dx,float dy,float dz,
-                             int r,int g,int b,int a) {
+    private static void quad(
+            VertexConsumer vc,
+            Matrix4f m,
+            float ax, float ay, float az,
+            float bx, float by, float bz,
+            float cx, float cy, float cz,
+            float dx, float dy, float dz,
+            int r, int g, int b, int a
+    ) {
         vc.vertex(m, ax, ay, az).color(r, g, b, a);
         vc.vertex(m, bx, by, bz).color(r, g, b, a);
         vc.vertex(m, cx, cy, cz).color(r, g, b, a);
@@ -197,11 +261,9 @@ public final class RenderUtils {
 
         Vec3d dir = ab.multiply(1.0 / len);
 
-        // camera is at (0,0,0) in cam-space since we already subtracted camPos
         Vec3d mid = a.add(b).multiply(0.5);
-        Vec3d view = mid.negate(); // from mid -> camera(0,0,0)
+        Vec3d view = mid.negate();
 
-        // if line points straight at camera, choose a stable fallback axis
         Vec3d side = dir.crossProduct(view);
         double sideLen = side.length();
         if (sideLen < 1e-6) {
@@ -229,5 +291,20 @@ public final class RenderUtils {
         vc.vertex(m, (float) a2.x, (float) a2.y, (float) a2.z).color(r, g, bl, aCol);
     }
 
+    // squared distance from a point to an AABB (0 if inside)
+    private static double dist2PointToBox(Vec3d p, Box b) {
+        double dx = 0.0;
+        if (p.x < b.minX) dx = b.minX - p.x;
+        else if (p.x > b.maxX) dx = p.x - b.maxX;
 
+        double dy = 0.0;
+        if (p.y < b.minY) dy = b.minY - p.y;
+        else if (p.y > b.maxY) dy = p.y - b.maxY;
+
+        double dz = 0.0;
+        if (p.z < b.minZ) dz = b.minZ - p.z;
+        else if (p.z > b.maxZ) dz = p.z - b.maxZ;
+
+        return dx * dx + dy * dy + dz * dz;
+    }
 }
