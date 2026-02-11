@@ -1,12 +1,11 @@
 package dev.duels.projectilepreview.client.projectile;
 
 import com.mojang.blaze3d.systems.RenderSystem;
-import net.minecraft.block.BlockState;
+import com.mojang.blaze3d.vertex.VertexFormat;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.render.RenderLayer;
+import net.minecraft.client.render.RenderLayers;
 import net.minecraft.client.render.VertexConsumer;
 import net.minecraft.client.render.VertexConsumerProvider;
-import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.mob.HostileEntity;
 import net.minecraft.entity.passive.PassiveEntity;
@@ -16,8 +15,6 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
-import net.minecraft.util.shape.VoxelShape;
-import net.minecraft.util.shape.VoxelShapes;
 import org.joml.Matrix4f;
 
 import java.lang.reflect.Method;
@@ -29,18 +26,18 @@ public final class RenderUtils {
     private RenderUtils() {}
 
     // Face fill sits slightly above the surface to avoid z-fighting.
-    private static final float FACE_EPS = 0.0f;
+    private static final float FACE_EPS = 0.002f;
 
     // Push outlines slightly outward so they don't end up inside the block.
     private static final double OUTLINE_PUSH = 0.01;
 
     private static final double HITBOX_BORDER_GROW = 0.0;
+    private static final float LINE_WIDTH = 5.0f;
 
-    public static void drawPolyline(MatrixStack matrices, VertexConsumerProvider consumers, List<Vec3d> points, Vec3d camPos) {
+    public static void drawPolyline(Matrix4f m, VertexConsumerProvider consumers, List<Vec3d> points, Vec3d camPos) {
         if (points == null || points.size() < 2) return;
 
-        VertexConsumer vc = consumers.getBuffer(RenderLayer.getLines());
-        Matrix4f m = matrices.peek().getPositionMatrix();
+        VertexConsumer vc = consumers.getBuffer(RenderLayers.lines());
 
         for (int i = 0; i < points.size() - 1; i++) {
             Vec3d a = points.get(i).subtract(camPos);
@@ -49,7 +46,7 @@ public final class RenderUtils {
         }
     }
 
-    public static void drawHitOverlay(MatrixStack matrices, VertexConsumerProvider consumers, TrajectorySim.HitInfo hit, Vec3d camPos) {
+    public static void drawHitOverlay(Matrix4f m, VertexConsumerProvider consumers, TrajectorySim.HitInfo hit, Vec3d camPos) {
         if (hit == null) return;
 
         // These names vary between patches; reflection avoids NoSuchMethodError.
@@ -66,43 +63,10 @@ public final class RenderUtils {
                 if (mc.world == null) return;
 
                 BlockPos pos = bhr.getBlockPos();
-                BlockState state = mc.world.getBlockState(pos);
-
-                VoxelShape shape = state.getOutlineShape(mc.world, pos, net.minecraft.block.ShapeContext.absent());
-                if (shape == null || shape.isEmpty()) shape = VoxelShapes.fullCube();
-
-                Vec3d hitPosCam = hit.pos().subtract(camPos);
-
-                // closest sub-box for "filled face"
-                Box closest = null;
-                double bestD2 = Double.POSITIVE_INFINITY;
-
-                for (Box local : shape.getBoundingBoxes()) {
-                    Box worldBox = local.offset(pos.getX(), pos.getY(), pos.getZ());
-                    Box camBox = worldBox.offset(-camPos.x, -camPos.y, -camPos.z);
-
-                    double d2 = dist2PointToBox(hitPosCam, camBox);
-                    if (d2 < bestD2) {
-                        bestD2 = d2;
-                        closest = camBox;
-                    }
-                }
-
-                // Outline ALL sub-boxes (whole shape), but make the border more visible:
-                // - OUTLINE_PUSH prevents z-fighting inside the surface
-                // - HITBOX_BORDER_GROW enlarges the outline "border size"
-                for (Box local : shape.getBoundingBoxes()) {
-                    Box worldBox = local.offset(pos.getX(), pos.getY(), pos.getZ());
-                    Box camBox = worldBox.offset(-camPos.x, -camPos.y, -camPos.z);
-
-                    Box outlineBox = camBox.expand(OUTLINE_PUSH + HITBOX_BORDER_GROW);
-                    drawBoxOutlineLines(matrices, consumers, outlineBox, 80, 160, 255, 255);
-                }
-
-                // Filled face highlight (double-sided so it never shows only half)
-                if (closest != null) {
-                    drawFaceFillQuad(matrices, consumers, closest, hitPosCam, 80, 160, 255, 80);
-                }
+                Box camBox = new Box(pos).offset(-camPos.x, -camPos.y, -camPos.z);
+                Box outlineBox = camBox.expand(OUTLINE_PUSH + HITBOX_BORDER_GROW);
+                drawBoxOutlineLines(m, consumers, outlineBox, 80, 160, 255, 255);
+                drawFaceFillQuad(m, consumers, camBox, bhr.getSide(), 80, 160, 255, 80);
 
                 return;
             }
@@ -117,10 +81,10 @@ public final class RenderUtils {
 
                 // Bigger entity hitbox outline too
                 Box outlineBox = bbCam.expand(OUTLINE_PUSH + HITBOX_BORDER_GROW);
-                drawBoxOutlineLines(matrices, consumers, outlineBox, col[0], col[1], col[2], 255);
+                drawBoxOutlineLines(m, consumers, outlineBox, col[0], col[1], col[2], 255);
 
                 Vec3d hitPosCam = hit.pos().subtract(camPos);
-                drawFaceFillQuad(matrices, consumers, bbCam, hitPosCam, col[0], col[1], col[2], 80);
+                drawFaceFillQuad(m, consumers, bbCam, hitPosCam, col[0], col[1], col[2], 80);
             }
         } finally {
             rsCall("depthMask", boolean.class, true);
@@ -129,27 +93,64 @@ public final class RenderUtils {
         }
     }
 
-    // ---- Filled face (double-sided, so no “half triangle”) ----
+    // ---- Filled face (double-sided, so no "half triangle") ----
 
-    private static void drawFaceFillQuad(MatrixStack matrices, VertexConsumerProvider consumers, Box b, Vec3d hitPosCam, int r, int g, int bl, int aFill) {
-        Direction face = nearestFace(b, hitPosCam);
+    private static void drawFaceFillQuad(Matrix4f m, VertexConsumerProvider consumers, Box b, Vec3d hitPosCam, int r, int g, int bl, int aFill) {
+        drawFaceFillQuad(m, consumers, b, nearestFace(b, hitPosCam), r, g, bl, aFill);
+    }
 
-        // DebugFilledBox layer is stable enough and avoids your old custom RenderPhase layer
-        VertexConsumer vc = consumers.getBuffer(RenderLayer.getDebugFilledBox());
-        Matrix4f m = matrices.peek().getPositionMatrix();
+    private static void drawFaceFillQuad(Matrix4f m, VertexConsumerProvider consumers, Box b, Direction face, int r, int g, int bl, int aFill) {
+        VertexConsumer vc = consumers.getBuffer(RenderLayers.debugFilledBox());
 
         float x1 = (float) b.minX, x2 = (float) b.maxX;
         float y1 = (float) b.minY, y2 = (float) b.maxY;
         float z1 = (float) b.minZ, z2 = (float) b.maxZ;
 
+        boolean useQuads = RenderLayers.debugFilledBox().getDrawMode() == VertexFormat.DrawMode.QUADS;
         switch (face) {
-            case WEST  -> { float x = x1 - FACE_EPS; faceTwoTrianglesDoubleSided(vc, m, x,y1,z1, x,y2,z1, x,y2,z2, x,y1,z2, r,g,bl,aFill); }
-            case EAST  -> { float x = x2 + FACE_EPS; faceTwoTrianglesDoubleSided(vc, m, x,y1,z2, x,y2,z2, x,y2,z1, x,y1,z1, r,g,bl,aFill); }
-            case NORTH -> { float z = z1 - FACE_EPS; faceTwoTrianglesDoubleSided(vc, m, x2,y1,z, x2,y2,z, x1,y2,z, x1,y1,z, r,g,bl,aFill); }
-            case SOUTH -> { float z = z2 + FACE_EPS; faceTwoTrianglesDoubleSided(vc, m, x1,y1,z, x1,y2,z, x2,y2,z, x2,y1,z, r,g,bl,aFill); }
-            case DOWN  -> { float y = y1 - FACE_EPS; faceTwoTrianglesDoubleSided(vc, m, x1,y,z2, x2,y,z2, x2,y,z1, x1,y,z1, r,g,bl,aFill); }
-            case UP    -> { float y = y2 + FACE_EPS; faceTwoTrianglesDoubleSided(vc, m, x1,y,z1, x2,y,z1, x2,y,z2, x1,y,z2, r,g,bl,aFill); }
+            case WEST  -> { float x = x1 - FACE_EPS; faceFill(vc, m, useQuads, x,y1,z1, x,y2,z1, x,y2,z2, x,y1,z2, r,g,bl,aFill); }
+            case EAST  -> { float x = x2 + FACE_EPS; faceFill(vc, m, useQuads, x,y1,z2, x,y2,z2, x,y2,z1, x,y1,z1, r,g,bl,aFill); }
+            case NORTH -> { float z = z1 - FACE_EPS; faceFill(vc, m, useQuads, x2,y1,z, x2,y2,z, x1,y2,z, x1,y1,z, r,g,bl,aFill); }
+            case SOUTH -> { float z = z2 + FACE_EPS; faceFill(vc, m, useQuads, x1,y1,z, x1,y2,z, x2,y2,z, x2,y1,z, r,g,bl,aFill); }
+            case DOWN  -> { float y = y1 - FACE_EPS; faceFill(vc, m, useQuads, x1,y,z2, x2,y,z2, x2,y,z1, x1,y,z1, r,g,bl,aFill); }
+            case UP    -> { float y = y2 + FACE_EPS; faceFill(vc, m, useQuads, x1,y,z1, x2,y,z1, x2,y,z2, x1,y,z2, r,g,bl,aFill); }
         }
+    }
+
+    private static void faceFill(
+            VertexConsumer vc, Matrix4f m, boolean useQuads,
+            float ax, float ay, float az,
+            float bx, float by, float bz,
+            float cx, float cy, float cz,
+            float dx, float dy, float dz,
+            int r, int g, int b, int a
+    ) {
+        if (useQuads) {
+            faceQuadDoubleSided(vc, m, ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz, r, g, b, a);
+        } else {
+            faceTwoTrianglesDoubleSided(vc, m, ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz, r, g, b, a);
+        }
+    }
+
+    private static void faceQuadDoubleSided(
+            VertexConsumer vc, Matrix4f m,
+            float ax, float ay, float az,
+            float bx, float by, float bz,
+            float cx, float cy, float cz,
+            float dx, float dy, float dz,
+            int r, int g, int b, int a
+    ) {
+        // Front quad: A B C D
+        v(vc, m, ax, ay, az, r, g, b, a);
+        v(vc, m, bx, by, bz, r, g, b, a);
+        v(vc, m, cx, cy, cz, r, g, b, a);
+        v(vc, m, dx, dy, dz, r, g, b, a);
+
+        // Back quad: D C B A
+        v(vc, m, dx, dy, dz, r, g, b, a);
+        v(vc, m, cx, cy, cz, r, g, b, a);
+        v(vc, m, bx, by, bz, r, g, b, a);
+        v(vc, m, ax, ay, az, r, g, b, a);
     }
 
     private static void faceTwoTrianglesDoubleSided(
@@ -170,7 +171,6 @@ public final class RenderUtils {
         v(vc, m, cx, cy, cz, r, g, b, a);
         v(vc, m, dx, dy, dz, r, g, b, a);
 
-
         // Triangle 1 back: C B A
         v(vc, m, cx, cy, cz, r, g, b, a);
         v(vc, m, bx, by, bz, r, g, b, a);
@@ -182,13 +182,10 @@ public final class RenderUtils {
         v(vc, m, ax, ay, az, r, g, b, a);
     }
 
-
-
     // ---- Line outlines ----
 
-    private static void drawBoxOutlineLines(MatrixStack matrices, VertexConsumerProvider consumers, Box b, int r, int g, int bl, int a) {
-        VertexConsumer vc = consumers.getBuffer(RenderLayer.getLines());
-        Matrix4f m = matrices.peek().getPositionMatrix();
+    private static void drawBoxOutlineLines(Matrix4f m, VertexConsumerProvider consumers, Box b, int r, int g, int bl, int a) {
+        VertexConsumer vc = consumers.getBuffer(RenderLayers.lines());
 
         Vec3d p000 = new Vec3d(b.minX, b.minY, b.minZ);
         Vec3d p001 = new Vec3d(b.minX, b.minY, b.maxZ);
@@ -217,9 +214,8 @@ public final class RenderUtils {
     }
 
     private static void line(VertexConsumer vc, Matrix4f m, Vec3d a, Vec3d b, int r, int g, int bl, int alpha) {
-        // RenderLayer.getLines() often expects POSITION_COLOR_NORMAL in 1.21.x
-        vc.vertex(m, (float) a.x, (float) a.y, (float) a.z).color(r, g, bl, alpha).normal(0f, 1f, 0f);
-        vc.vertex(m, (float) b.x, (float) b.y, (float) b.z).color(r, g, bl, alpha).normal(0f, 1f, 0f);
+        lineVertex(vc, m, a, r, g, bl, alpha);
+        lineVertex(vc, m, b, r, g, bl, alpha);
     }
 
     // ---- Helpers ----
@@ -251,22 +247,6 @@ public final class RenderUtils {
         return new int[]{255, 165, 60};
     }
 
-    private static double dist2PointToBox(Vec3d p, Box b) {
-        double dx = 0.0;
-        if (p.x < b.minX) dx = b.minX - p.x;
-        else if (p.x > b.maxX) dx = p.x - b.maxX;
-
-        double dy = 0.0;
-        if (p.y < b.minY) dy = b.minY - p.y;
-        else if (p.y > b.maxY) dy = p.y - b.maxY;
-
-        double dz = 0.0;
-        if (p.z < b.minZ) dz = b.minZ - p.z;
-        else if (p.z > b.maxZ) dz = p.z - b.maxZ;
-
-        return dx * dx + dy * dy + dz * dz;
-    }
-
     // ---- RenderSystem compat (NoSuchMethodError-proof) ----
 
     private static void rsCall(String name, Class<?> argType, Object arg) {
@@ -282,6 +262,15 @@ public final class RenderUtils {
             m.invoke(null);
         } catch (Throwable ignored) {}
     }
+
+    private static void lineVertex(VertexConsumer vc, Matrix4f m, Vec3d p, int r, int g, int b, int a) {
+        VertexConsumer v = vc.vertex(m, (float) p.x, (float) p.y, (float) p.z).color(r, g, b, a).normal(0f, 1f, 0f);
+        try {
+            Method lw = v.getClass().getMethod("lineWidth", float.class);
+            lw.invoke(v, LINE_WIDTH);
+        } catch (Throwable ignored) {}
+    }
+
     private static void v(VertexConsumer vc, Matrix4f m, float x, float y, float z, int r, int g, int b, int a) {
         vc.vertex(m, x, y, z).color(r, g, b, a);
         vcEnd(vc);
@@ -299,6 +288,4 @@ public final class RenderUtils {
             m.invoke(vc);
         } catch (Throwable ignored) {}
     }
-
-
 }

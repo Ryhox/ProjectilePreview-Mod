@@ -64,7 +64,7 @@ public final class TrajectorySim {
             int steps,
             double stepTime
     ) {
-        World world = owner.getWorld();
+        World world = owner.getEntityWorld();
         if (world == null) return null;
 
         List<Vec3d> points = new ArrayList<>(steps + 1);
@@ -115,7 +115,7 @@ public final class TrajectorySim {
     }
 
     private static HitInfo.EntityHit raycastEntity(Entity owner, Vec3d from, Vec3d to) {
-        World world = owner.getWorld();
+        World world = owner.getEntityWorld();
         if (world == null) return null;
 
         Box sweep = new Box(from, to).expand(0.35);

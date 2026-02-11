@@ -111,7 +111,7 @@ public final class AimProfiles {
     }
 
     private static Vec3d aimPoint(PlayerEntity p, float td, double maxDist) {
-        var world = p.getWorld();
+        var world = p.getEntityWorld();
         Vec3d eye = p.getCameraPosVec(td);
         Vec3d dir = p.getRotationVec(td).normalize();
         Vec3d end = eye.add(dir.multiply(maxDist));

@@ -1,20 +1,22 @@
 package dev.duels.projectilepreview.client.projectile;
 
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.render.Camera;
+import net.minecraft.client.render.RenderTickCounter;
 import net.minecraft.client.render.VertexConsumerProvider;
-import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.math.Vec3d;
+import org.joml.Matrix4f;
 
 import java.util.List;
 
 public final class AimPreviewRenderer {
     private AimPreviewRenderer() {}
 
-    public static void render(WorldRenderContext ctx) {
+    public static void render(RenderTickCounter tickCounter, Camera camera, Matrix4f positionMatrix, VertexConsumerProvider consumers) {
+        if (tickCounter == null || camera == null || positionMatrix == null || consumers == null) return;
+
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.world == null) return;
 
@@ -27,17 +29,13 @@ public final class AimPreviewRenderer {
         AimProfiles.Profile profile = AimProfiles.match(player, stack);
         if (profile == null) return;
 
-        float tickDelta = ctx.tickCounter().getTickDelta(false);
+        float tickDelta = tickCounter.getTickProgress(false);
 
         Vec3d startPos = profile.startPos(player, tickDelta);
         List<Vec3d> startVels = profile.startVels(player, stack, tickDelta);
         if (startVels == null || startVels.isEmpty()) return;
 
-        Camera cam = ctx.camera();
-        Vec3d camPos = cam.getPos();
-
-        MatrixStack matrices = ctx.matrixStack();
-        VertexConsumerProvider consumers = ctx.consumers();
+        Vec3d camPos = camera.getCameraPos();
 
         for (Vec3d startVel : startVels) {
             if (startVel == null) continue;
@@ -54,10 +52,10 @@ public final class AimPreviewRenderer {
 
             if (res == null || res.points().size() < 2) continue;
 
-            RenderUtils.drawPolyline(matrices, consumers, res.points(), camPos);
+            RenderUtils.drawPolyline(positionMatrix, consumers, res.points(), camPos);
 
             if (res.hit() != null) {
-                RenderUtils.drawHitOverlay(matrices, consumers, res.hit(), camPos);
+                RenderUtils.drawHitOverlay(positionMatrix, consumers, res.hit(), camPos);
             }
         }
     }

@@ -4,6 +4,7 @@
   "package": "dev.duels.projectilepreview.mixin.client",
   "compatibilityLevel": "JAVA_21",
   "client": [
+    "WorldRendererMixin"
   ],
   "injectors": {
     "defaultRequire": 1
