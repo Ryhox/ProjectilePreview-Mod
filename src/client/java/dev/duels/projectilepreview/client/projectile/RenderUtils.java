@@ -264,11 +264,12 @@ public final class RenderUtils {
     }
 
     private static void lineVertex(VertexConsumer vc, Matrix4f m, Vec3d p, int r, int g, int b, int a) {
-        VertexConsumer v = vc.vertex(m, (float) p.x, (float) p.y, (float) p.z).color(r, g, b, a).normal(0f, 1f, 0f);
-        try {
-            Method lw = v.getClass().getMethod("lineWidth", float.class);
-            lw.invoke(v, LINE_WIDTH);
-        } catch (Throwable ignored) {}
+        VertexConsumer v = vc.vertex(m, (float) p.x, (float) p.y, (float) p.z)
+                .color(r, g, b, a)
+                .normal(0f, 1f, 0f);
+        // Must set LineWidth element for RenderLayers.lines() to avoid missing-vertex crash.
+        v.lineWidth(LINE_WIDTH);
+        vcEnd(v);
     }
 
     private static void v(VertexConsumer vc, Matrix4f m, float x, float y, float z, int r, int g, int b, int a) {

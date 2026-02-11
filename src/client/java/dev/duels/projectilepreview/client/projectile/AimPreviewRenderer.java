@@ -36,6 +36,7 @@ public final class AimPreviewRenderer {
         if (startVels == null || startVels.isEmpty()) return;
 
         Vec3d camPos = camera.getCameraPos();
+        boolean renderTrajectory = AimPreview.shouldRenderTrajectory();
 
         for (Vec3d startVel : startVels) {
             if (startVel == null) continue;
@@ -52,7 +53,9 @@ public final class AimPreviewRenderer {
 
             if (res == null || res.points().size() < 2) continue;
 
-            RenderUtils.drawPolyline(positionMatrix, consumers, res.points(), camPos);
+            if (renderTrajectory) {
+                RenderUtils.drawPolyline(positionMatrix, consumers, res.points(), camPos);
+            }
 
             if (res.hit() != null) {
                 RenderUtils.drawHitOverlay(positionMatrix, consumers, res.hit(), camPos);
