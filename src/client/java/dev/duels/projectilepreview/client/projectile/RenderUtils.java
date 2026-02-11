@@ -3,6 +3,7 @@ package dev.duels.projectilepreview.client.projectile;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.render.RenderLayer;
 import net.minecraft.client.render.RenderLayers;
 import net.minecraft.client.render.VertexConsumer;
 import net.minecraft.client.render.VertexConsumerProvider;
@@ -37,7 +38,7 @@ public final class RenderUtils {
     public static void drawPolyline(Matrix4f m, VertexConsumerProvider consumers, List<Vec3d> points, Vec3d camPos) {
         if (points == null || points.size() < 2) return;
 
-        VertexConsumer vc = consumers.getBuffer(RenderLayers.lines());
+        VertexConsumer vc = consumers.getBuffer(linesLayer());
 
         for (int i = 0; i < points.size() - 1; i++) {
             Vec3d a = points.get(i).subtract(camPos);
@@ -100,13 +101,14 @@ public final class RenderUtils {
     }
 
     private static void drawFaceFillQuad(Matrix4f m, VertexConsumerProvider consumers, Box b, Direction face, int r, int g, int bl, int aFill) {
-        VertexConsumer vc = consumers.getBuffer(RenderLayers.debugFilledBox());
+        VertexConsumer vc = consumers.getBuffer(debugFilledBoxLayer());
 
         float x1 = (float) b.minX, x2 = (float) b.maxX;
         float y1 = (float) b.minY, y2 = (float) b.maxY;
         float z1 = (float) b.minZ, z2 = (float) b.maxZ;
 
-        boolean useQuads = RenderLayers.debugFilledBox().getDrawMode() == VertexFormat.DrawMode.QUADS;
+        RenderLayer fillLayer = debugFilledBoxLayer();
+        boolean useQuads = fillLayer.getDrawMode() == VertexFormat.DrawMode.QUADS;
         switch (face) {
             case WEST  -> { float x = x1 - FACE_EPS; faceFill(vc, m, useQuads, x,y1,z1, x,y2,z1, x,y2,z2, x,y1,z2, r,g,bl,aFill); }
             case EAST  -> { float x = x2 + FACE_EPS; faceFill(vc, m, useQuads, x,y1,z2, x,y2,z2, x,y2,z1, x,y1,z1, r,g,bl,aFill); }
@@ -185,7 +187,7 @@ public final class RenderUtils {
     // ---- Line outlines ----
 
     private static void drawBoxOutlineLines(Matrix4f m, VertexConsumerProvider consumers, Box b, int r, int g, int bl, int a) {
-        VertexConsumer vc = consumers.getBuffer(RenderLayers.lines());
+        VertexConsumer vc = consumers.getBuffer(linesLayer());
 
         Vec3d p000 = new Vec3d(b.minX, b.minY, b.minZ);
         Vec3d p001 = new Vec3d(b.minX, b.minY, b.maxZ);
@@ -261,6 +263,30 @@ public final class RenderUtils {
             Method m = RenderSystem.class.getMethod(name);
             m.invoke(null);
         } catch (Throwable ignored) {}
+    }
+
+    private static RenderLayer linesLayer() {
+        try {
+            Method m = RenderLayers.class.getMethod("lines");
+            return (RenderLayer) m.invoke(null);
+        } catch (Throwable ignored) {}
+        try {
+            Method m = RenderLayer.class.getMethod("getLines");
+            return (RenderLayer) m.invoke(null);
+        } catch (Throwable ignored) {}
+        return RenderLayer.getLines();
+    }
+
+    private static RenderLayer debugFilledBoxLayer() {
+        try {
+            Method m = RenderLayers.class.getMethod("debugFilledBox");
+            return (RenderLayer) m.invoke(null);
+        } catch (Throwable ignored) {}
+        try {
+            Method m = RenderLayer.class.getMethod("getDebugFilledBox");
+            return (RenderLayer) m.invoke(null);
+        } catch (Throwable ignored) {}
+        return RenderLayer.getDebugFilledBox();
     }
 
     private static void lineVertex(VertexConsumer vc, Matrix4f m, Vec3d p, int r, int g, int b, int a) {

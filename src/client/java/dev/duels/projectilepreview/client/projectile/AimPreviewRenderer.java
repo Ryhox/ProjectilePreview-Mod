@@ -9,6 +9,7 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.util.math.Vec3d;
 import org.joml.Matrix4f;
 
+import java.util.ArrayList;
 import java.util.List;
 
 public final class AimPreviewRenderer {
@@ -52,7 +53,19 @@ public final class AimPreviewRenderer {
 
             if (res == null || res.points().size() < 2) continue;
 
-            RenderUtils.drawPolyline(positionMatrix, consumers, res.points(), camPos);
+            List<Vec3d> points = res.points();
+            Vec3d visualStart = profile.visualStartPos(player, stack, tickDelta);
+            if (visualStart != null && !points.isEmpty()) {
+                Vec3d first = points.get(0);
+                if (!visualStart.equals(first)) {
+                    List<Vec3d> combined = new ArrayList<>(points.size() + 1);
+                    combined.add(visualStart);
+                    combined.addAll(points);
+                    points = combined;
+                }
+            }
+
+            RenderUtils.drawPolyline(positionMatrix, consumers, points, camPos);
 
             if (res.hit() != null) {
                 RenderUtils.drawHitOverlay(positionMatrix, consumers, res.hit(), camPos);

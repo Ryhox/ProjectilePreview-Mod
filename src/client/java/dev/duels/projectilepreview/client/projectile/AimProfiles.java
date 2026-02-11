@@ -67,6 +67,7 @@ public final class AimProfiles {
         double gravity();
         Vec3d startPos(PlayerEntity p, float tickDelta);
         List<Vec3d> startVels(PlayerEntity p, ItemStack stack, float tickDelta);
+        default Vec3d visualStartPos(PlayerEntity p, ItemStack stack, float tickDelta) { return null; }
     }
 
     private static Vec3d handTipPos(PlayerEntity p, float td, double f, double s, double u) {
@@ -155,6 +156,12 @@ public final class AimProfiles {
     private static double tridentChargeTicks(PlayerEntity p, ItemStack trident, float td) {
         int used = trident.getMaxUseTime(p) - p.getItemUseTimeLeft();
         return used + td;
+    }
+
+    private static Vec3d windChargeStartPos(PlayerEntity p, float td) {
+        Vec3d base = p.getLerpedPos(td);
+        Vec3d eye = p.getCameraPosVec(td);
+        return new Vec3d(base.x, eye.y, base.z);
     }
 
     private static final class Profiles {
@@ -303,9 +310,21 @@ public final class AimProfiles {
 
             public List<Vec3d> startVels(PlayerEntity p, ItemStack s, float td) {
                 Vec3d start = startPos(p, td);
+
                 Vec3d dir = dirToCrosshair(p, td, start, AIM_MAX_DIST);
-                return List.of(dir.multiply(1.6).add(p.getVelocity()));
+                Vec3d vel = dir.multiply(1.5);
+
+                Vec3d move = p.getMovement();
+                double my = p.isOnGround() ? 0.0 : move.y;
+                vel = vel.add(move.x, my, move.z);
+
+                return List.of(vel);
+            }
+
+            public Vec3d visualStartPos(PlayerEntity p, ItemStack s, float td) {
+                return null;
             }
         };
+
     }
 }
