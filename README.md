@@ -3,7 +3,7 @@
 
 **Projectile Preview** is a Fabric client-side mod that shows the predicted flight path of projectiles before you throw or shoot them.
 
-⚠️ **Work in progress** – but it should run stable.
+[![Downloads](https://img.shields.io/modrinth/dt/projectile.preview?color=00AF5C&label=downloads&logo=modrinth&style=for-the-badge)](https://modrinth.com/mod/projectile.preview)
 
 ---
 
