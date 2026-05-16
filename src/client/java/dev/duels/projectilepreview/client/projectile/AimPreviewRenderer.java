@@ -1,12 +1,12 @@
 package dev.duels.projectilepreview.client.projectile;
 
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.render.Camera;
-import net.minecraft.client.render.RenderTickCounter;
-import net.minecraft.client.render.VertexConsumerProvider;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.item.ItemStack;
-import net.minecraft.util.math.Vec3d;
+import net.minecraft.client.Camera;
+import net.minecraft.client.DeltaTracker;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 
 import java.util.List;
@@ -14,31 +14,31 @@ import java.util.List;
 public final class AimPreviewRenderer {
     private AimPreviewRenderer() {}
 
-    public static void render(RenderTickCounter tickCounter, Camera camera, Matrix4f positionMatrix, VertexConsumerProvider consumers) {
-        if (tickCounter == null || camera == null || positionMatrix == null || consumers == null) return;
+    public static void render(DeltaTracker deltaTracker, Camera camera, Matrix4f positionMatrix, MultiBufferSource consumers) {
+        if (deltaTracker == null || camera == null || positionMatrix == null || consumers == null) return;
 
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.world == null) return;
+        Minecraft client = Minecraft.getInstance();
+        if (client.level == null) return;
 
-        PlayerEntity player = client.player;
+        Player player = client.player;
         if (player == null) return;
 
-        ItemStack stack = player.getMainHandStack();
+        ItemStack stack = player.getMainHandItem();
         if (stack.isEmpty()) return;
 
         AimProfiles.Profile profile = AimProfiles.match(player, stack);
         if (profile == null) return;
 
-        float tickDelta = tickCounter.getTickProgress(false);
+        float tickDelta = deltaTracker.getGameTimeDeltaPartialTick(false);
 
-        Vec3d startPos = profile.startPos(player, tickDelta);
-        List<Vec3d> startVels = profile.startVels(player, stack, tickDelta);
+        Vec3 startPos = profile.startPos(player, tickDelta);
+        List<Vec3> startVels = profile.startVels(player, stack, tickDelta);
         if (startVels == null || startVels.isEmpty()) return;
 
-        Vec3d camPos = camera.getCameraPos();
+        Vec3 camPos = camera.position();
         boolean renderTrajectory = AimPreview.shouldRenderTrajectory();
 
-        for (Vec3d startVel : startVels) {
+        for (Vec3 startVel : startVels) {
             if (startVel == null) continue;
 
             TrajectorySim.Result res = TrajectorySim.simulate(

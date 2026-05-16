@@ -1,20 +1,19 @@
 package dev.duels.projectilepreview.client.projectile;
 
 import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.vertex.VertexFormat;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.render.RenderLayers;
-import net.minecraft.client.render.VertexConsumer;
-import net.minecraft.client.render.VertexConsumerProvider;
-import net.minecraft.entity.Entity;
-import net.minecraft.entity.mob.HostileEntity;
-import net.minecraft.entity.passive.PassiveEntity;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Box;
-import net.minecraft.util.math.Direction;
-import net.minecraft.util.math.Vec3d;
+import com.mojang.blaze3d.vertex.VertexConsumer;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.rendertype.RenderTypes;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.animal.Animal;
+import net.minecraft.world.entity.monster.Monster;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 
 import java.lang.reflect.Method;
@@ -25,31 +24,26 @@ import static dev.duels.projectilepreview.client.projectile.TrajectorySim.ENTITY
 public final class RenderUtils {
     private RenderUtils() {}
 
-    // Face fill sits slightly above the surface to avoid z-fighting.
     private static final float FACE_EPS = 0.002f;
-
-    // Push outlines slightly outward so they don't end up inside the block.
     private static final double OUTLINE_PUSH = 0.01;
-
     private static final double HITBOX_BORDER_GROW = 0.0;
     private static final float LINE_WIDTH = 5.0f;
 
-    public static void drawPolyline(Matrix4f m, VertexConsumerProvider consumers, List<Vec3d> points, Vec3d camPos) {
+    public static void drawPolyline(Matrix4f m, MultiBufferSource consumers, List<Vec3> points, Vec3 camPos) {
         if (points == null || points.size() < 2) return;
 
-        VertexConsumer vc = consumers.getBuffer(RenderLayers.lines());
+        VertexConsumer vc = consumers.getBuffer(RenderTypes.lines());
 
         for (int i = 0; i < points.size() - 1; i++) {
-            Vec3d a = points.get(i).subtract(camPos);
-            Vec3d b = points.get(i + 1).subtract(camPos);
+            Vec3 a = points.get(i).subtract(camPos);
+            Vec3 b = points.get(i + 1).subtract(camPos);
             line(vc, m, a, b, 255, 255, 255, 255);
         }
     }
 
-    public static void drawHitOverlay(Matrix4f m, VertexConsumerProvider consumers, TrajectorySim.HitInfo hit, Vec3d camPos) {
+    public static void drawHitOverlay(Matrix4f m, MultiBufferSource consumers, TrajectorySim.HitInfo hit, Vec3 camPos) {
         if (hit == null) return;
 
-        // These names vary between patches; reflection avoids NoSuchMethodError.
         rsCall("enableBlend");
         rsCall("disableCull");
         rsCall("disableDepthTest");
@@ -59,14 +53,18 @@ public final class RenderUtils {
             if (hit instanceof TrajectorySim.HitInfo.BlockHit bh) {
                 BlockHitResult bhr = bh.bhr();
 
-                MinecraftClient mc = MinecraftClient.getInstance();
-                if (mc.world == null) return;
+                Minecraft mc = Minecraft.getInstance();
+                if (mc.level == null) return;
 
                 BlockPos pos = bhr.getBlockPos();
-                Box camBox = new Box(pos).offset(-camPos.x, -camPos.y, -camPos.z);
-                Box outlineBox = camBox.expand(OUTLINE_PUSH + HITBOX_BORDER_GROW);
+                // Build a unit AABB for the block, shifted into camera-relative space
+                AABB camBox = new AABB(
+                        pos.getX() - camPos.x, pos.getY() - camPos.y, pos.getZ() - camPos.z,
+                        pos.getX() + 1.0 - camPos.x, pos.getY() + 1.0 - camPos.y, pos.getZ() + 1.0 - camPos.z
+                );
+                AABB outlineBox = camBox.inflate(OUTLINE_PUSH + HITBOX_BORDER_GROW);
                 drawBoxOutlineLines(m, consumers, outlineBox, 80, 160, 255, 255);
-                drawFaceFillQuad(m, consumers, camBox, bhr.getSide(), 80, 160, 255, 80);
+                drawFaceFillQuad(m, consumers, camBox, bhr.getDirection(), 80, 160, 255, 80);
 
                 return;
             }
@@ -74,16 +72,15 @@ public final class RenderUtils {
             if (hit instanceof TrajectorySim.HitInfo.EntityHit eh) {
                 Entity e = eh.entity();
 
-                Box bbWorld = e.getBoundingBox().expand(ENTITY_HITBOX_PAD);
-                Box bbCam = bbWorld.offset(-camPos.x, -camPos.y, -camPos.z);
+                AABB bbWorld = e.getBoundingBox().inflate(ENTITY_HITBOX_PAD);
+                AABB bbCam = bbWorld.move(-camPos.x, -camPos.y, -camPos.z);
 
                 int[] col = colorForEntity(e);
 
-                // Bigger entity hitbox outline too
-                Box outlineBox = bbCam.expand(OUTLINE_PUSH + HITBOX_BORDER_GROW);
+                AABB outlineBox = bbCam.inflate(OUTLINE_PUSH + HITBOX_BORDER_GROW);
                 drawBoxOutlineLines(m, consumers, outlineBox, col[0], col[1], col[2], 255);
 
-                Vec3d hitPosCam = hit.pos().subtract(camPos);
+                Vec3 hitPosCam = hit.pos().subtract(camPos);
                 drawFaceFillQuad(m, consumers, bbCam, hitPosCam, col[0], col[1], col[2], 80);
             }
         } finally {
@@ -93,46 +90,28 @@ public final class RenderUtils {
         }
     }
 
-    // ---- Filled face (double-sided, so no "half triangle") ----
-
-    private static void drawFaceFillQuad(Matrix4f m, VertexConsumerProvider consumers, Box b, Vec3d hitPosCam, int r, int g, int bl, int aFill) {
+    private static void drawFaceFillQuad(Matrix4f m, MultiBufferSource consumers, AABB b, Vec3 hitPosCam, int r, int g, int bl, int aFill) {
         drawFaceFillQuad(m, consumers, b, nearestFace(b, hitPosCam), r, g, bl, aFill);
     }
 
-    private static void drawFaceFillQuad(Matrix4f m, VertexConsumerProvider consumers, Box b, Direction face, int r, int g, int bl, int aFill) {
-        VertexConsumer vc = consumers.getBuffer(RenderLayers.debugFilledBox());
+    private static void drawFaceFillQuad(Matrix4f m, MultiBufferSource consumers, AABB b, Direction face, int r, int g, int bl, int aFill) {
+        VertexConsumer vc = consumers.getBuffer(RenderTypes.debugFilledBox());
 
         float x1 = (float) b.minX, x2 = (float) b.maxX;
         float y1 = (float) b.minY, y2 = (float) b.maxY;
         float z1 = (float) b.minZ, z2 = (float) b.maxZ;
 
-        boolean useQuads = RenderLayers.debugFilledBox().getDrawMode() == VertexFormat.DrawMode.QUADS;
         switch (face) {
-            case WEST  -> { float x = x1 - FACE_EPS; faceFill(vc, m, useQuads, x,y1,z1, x,y2,z1, x,y2,z2, x,y1,z2, r,g,bl,aFill); }
-            case EAST  -> { float x = x2 + FACE_EPS; faceFill(vc, m, useQuads, x,y1,z2, x,y2,z2, x,y2,z1, x,y1,z1, r,g,bl,aFill); }
-            case NORTH -> { float z = z1 - FACE_EPS; faceFill(vc, m, useQuads, x2,y1,z, x2,y2,z, x1,y2,z, x1,y1,z, r,g,bl,aFill); }
-            case SOUTH -> { float z = z2 + FACE_EPS; faceFill(vc, m, useQuads, x1,y1,z, x1,y2,z, x2,y2,z, x2,y1,z, r,g,bl,aFill); }
-            case DOWN  -> { float y = y1 - FACE_EPS; faceFill(vc, m, useQuads, x1,y,z2, x2,y,z2, x2,y,z1, x1,y,z1, r,g,bl,aFill); }
-            case UP    -> { float y = y2 + FACE_EPS; faceFill(vc, m, useQuads, x1,y,z1, x2,y,z1, x2,y,z2, x1,y,z2, r,g,bl,aFill); }
+            case WEST  -> { float x = x1 - FACE_EPS; faceFillDoubleSided(vc, m, x,y1,z1, x,y2,z1, x,y2,z2, x,y1,z2, r,g,bl,aFill); }
+            case EAST  -> { float x = x2 + FACE_EPS; faceFillDoubleSided(vc, m, x,y1,z2, x,y2,z2, x,y2,z1, x,y1,z1, r,g,bl,aFill); }
+            case NORTH -> { float z = z1 - FACE_EPS; faceFillDoubleSided(vc, m, x2,y1,z, x2,y2,z, x1,y2,z, x1,y1,z, r,g,bl,aFill); }
+            case SOUTH -> { float z = z2 + FACE_EPS; faceFillDoubleSided(vc, m, x1,y1,z, x1,y2,z, x2,y2,z, x2,y1,z, r,g,bl,aFill); }
+            case DOWN  -> { float y = y1 - FACE_EPS; faceFillDoubleSided(vc, m, x1,y,z2, x2,y,z2, x2,y,z1, x1,y,z1, r,g,bl,aFill); }
+            case UP    -> { float y = y2 + FACE_EPS; faceFillDoubleSided(vc, m, x1,y,z1, x2,y,z1, x2,y,z2, x1,y,z2, r,g,bl,aFill); }
         }
     }
 
-    private static void faceFill(
-            VertexConsumer vc, Matrix4f m, boolean useQuads,
-            float ax, float ay, float az,
-            float bx, float by, float bz,
-            float cx, float cy, float cz,
-            float dx, float dy, float dz,
-            int r, int g, int b, int a
-    ) {
-        if (useQuads) {
-            faceQuadDoubleSided(vc, m, ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz, r, g, b, a);
-        } else {
-            faceTwoTrianglesDoubleSided(vc, m, ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz, r, g, b, a);
-        }
-    }
-
-    private static void faceQuadDoubleSided(
+    private static void faceFillDoubleSided(
             VertexConsumer vc, Matrix4f m,
             float ax, float ay, float az,
             float bx, float by, float bz,
@@ -140,62 +119,29 @@ public final class RenderUtils {
             float dx, float dy, float dz,
             int r, int g, int b, int a
     ) {
-        // Front quad: A B C D
         v(vc, m, ax, ay, az, r, g, b, a);
         v(vc, m, bx, by, bz, r, g, b, a);
         v(vc, m, cx, cy, cz, r, g, b, a);
         v(vc, m, dx, dy, dz, r, g, b, a);
 
-        // Back quad: D C B A
         v(vc, m, dx, dy, dz, r, g, b, a);
         v(vc, m, cx, cy, cz, r, g, b, a);
         v(vc, m, bx, by, bz, r, g, b, a);
         v(vc, m, ax, ay, az, r, g, b, a);
     }
 
-    private static void faceTwoTrianglesDoubleSided(
-            VertexConsumer vc, Matrix4f m,
-            float ax, float ay, float az,
-            float bx, float by, float bz,
-            float cx, float cy, float cz,
-            float dx, float dy, float dz,
-            int r, int g, int b, int a
-    ) {
-        // Triangle 1: A B C
-        v(vc, m, ax, ay, az, r, g, b, a);
-        v(vc, m, bx, by, bz, r, g, b, a);
-        v(vc, m, cx, cy, cz, r, g, b, a);
+    private static void drawBoxOutlineLines(Matrix4f m, MultiBufferSource consumers, AABB b, int r, int g, int bl, int a) {
+        VertexConsumer vc = consumers.getBuffer(RenderTypes.lines());
 
-        // Triangle 2: A C D
-        v(vc, m, ax, ay, az, r, g, b, a);
-        v(vc, m, cx, cy, cz, r, g, b, a);
-        v(vc, m, dx, dy, dz, r, g, b, a);
+        Vec3 p000 = new Vec3(b.minX, b.minY, b.minZ);
+        Vec3 p001 = new Vec3(b.minX, b.minY, b.maxZ);
+        Vec3 p010 = new Vec3(b.minX, b.maxY, b.minZ);
+        Vec3 p011 = new Vec3(b.minX, b.maxY, b.maxZ);
 
-        // Triangle 1 back: C B A
-        v(vc, m, cx, cy, cz, r, g, b, a);
-        v(vc, m, bx, by, bz, r, g, b, a);
-        v(vc, m, ax, ay, az, r, g, b, a);
-
-        // Triangle 2 back: D C A
-        v(vc, m, dx, dy, dz, r, g, b, a);
-        v(vc, m, cx, cy, cz, r, g, b, a);
-        v(vc, m, ax, ay, az, r, g, b, a);
-    }
-
-    // ---- Line outlines ----
-
-    private static void drawBoxOutlineLines(Matrix4f m, VertexConsumerProvider consumers, Box b, int r, int g, int bl, int a) {
-        VertexConsumer vc = consumers.getBuffer(RenderLayers.lines());
-
-        Vec3d p000 = new Vec3d(b.minX, b.minY, b.minZ);
-        Vec3d p001 = new Vec3d(b.minX, b.minY, b.maxZ);
-        Vec3d p010 = new Vec3d(b.minX, b.maxY, b.minZ);
-        Vec3d p011 = new Vec3d(b.minX, b.maxY, b.maxZ);
-
-        Vec3d p100 = new Vec3d(b.maxX, b.minY, b.minZ);
-        Vec3d p101 = new Vec3d(b.maxX, b.minY, b.maxZ);
-        Vec3d p110 = new Vec3d(b.maxX, b.maxY, b.minZ);
-        Vec3d p111 = new Vec3d(b.maxX, b.maxY, b.maxZ);
+        Vec3 p100 = new Vec3(b.maxX, b.minY, b.minZ);
+        Vec3 p101 = new Vec3(b.maxX, b.minY, b.maxZ);
+        Vec3 p110 = new Vec3(b.maxX, b.maxY, b.minZ);
+        Vec3 p111 = new Vec3(b.maxX, b.maxY, b.maxZ);
 
         line(vc, m, p000, p001, r, g, bl, a);
         line(vc, m, p001, p101, r, g, bl, a);
@@ -213,14 +159,12 @@ public final class RenderUtils {
         line(vc, m, p101, p111, r, g, bl, a);
     }
 
-    private static void line(VertexConsumer vc, Matrix4f m, Vec3d a, Vec3d b, int r, int g, int bl, int alpha) {
+    private static void line(VertexConsumer vc, Matrix4f m, Vec3 a, Vec3 b, int r, int g, int bl, int alpha) {
         lineVertex(vc, m, a, r, g, bl, alpha);
         lineVertex(vc, m, b, r, g, bl, alpha);
     }
 
-    // ---- Helpers ----
-
-    private static Direction nearestFace(Box b, Vec3d hit) {
+    private static Direction nearestFace(AABB b, Vec3 hit) {
         double dxMin = Math.abs(hit.x - b.minX);
         double dxMax = Math.abs(hit.x - b.maxX);
         double dyMin = Math.abs(hit.y - b.minY);
@@ -241,13 +185,11 @@ public final class RenderUtils {
     }
 
     private static int[] colorForEntity(Entity e) {
-        if (e instanceof PlayerEntity) return new int[]{180, 90, 255};
-        if (e instanceof PassiveEntity) return new int[]{60, 255, 120};
-        if (e instanceof HostileEntity) return new int[]{255, 70, 70};
+        if (e instanceof Player) return new int[]{180, 90, 255};
+        if (e instanceof Animal) return new int[]{60, 255, 120};
+        if (e instanceof Monster) return new int[]{255, 70, 70};
         return new int[]{255, 165, 60};
     }
-
-    // ---- RenderSystem compat (NoSuchMethodError-proof) ----
 
     private static void rsCall(String name, Class<?> argType, Object arg) {
         try {
@@ -263,30 +205,14 @@ public final class RenderUtils {
         } catch (Throwable ignored) {}
     }
 
-    private static void lineVertex(VertexConsumer vc, Matrix4f m, Vec3d p, int r, int g, int b, int a) {
-        VertexConsumer v = vc.vertex(m, (float) p.x, (float) p.y, (float) p.z)
-                .color(r, g, b, a)
-                .normal(0f, 1f, 0f);
-        // Must set LineWidth element for RenderLayers.lines() to avoid missing-vertex crash.
-        v.lineWidth(LINE_WIDTH);
-        vcEnd(v);
+    private static void lineVertex(VertexConsumer vc, Matrix4f m, Vec3 p, int r, int g, int b, int a) {
+        vc.addVertex(m, (float) p.x, (float) p.y, (float) p.z)
+                .setColor(r, g, b, a)
+                .setNormal(0f, 1f, 0f)
+                .setLineWidth(LINE_WIDTH);
     }
 
     private static void v(VertexConsumer vc, Matrix4f m, float x, float y, float z, int r, int g, int b, int a) {
-        vc.vertex(m, x, y, z).color(r, g, b, a);
-        vcEnd(vc);
-    }
-
-    private static void vcEnd(VertexConsumer vc) {
-        try {
-            Method m = vc.getClass().getMethod("next");
-            m.invoke(vc);
-            return;
-        } catch (Throwable ignored) {}
-
-        try {
-            Method m = vc.getClass().getMethod("endVertex");
-            m.invoke(vc);
-        } catch (Throwable ignored) {}
+        vc.addVertex(m, x, y, z).setColor(r, g, b, a);
     }
 }

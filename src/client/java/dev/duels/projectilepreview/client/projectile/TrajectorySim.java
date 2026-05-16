@@ -1,16 +1,16 @@
 package dev.duels.projectilepreview.client.projectile;
 
-import net.minecraft.block.BlockState;
-import net.minecraft.entity.Entity;
-import net.minecraft.entity.LivingEntity;
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.hit.HitResult;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Box;
-import net.minecraft.util.math.Vec3d;
-import net.minecraft.util.shape.VoxelShape;
-import net.minecraft.world.RaycastContext;
-import net.minecraft.world.World;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.VoxelShape;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -20,64 +20,64 @@ public final class TrajectorySim {
 
     public static final double ENTITY_HITBOX_PAD = 0.10;
 
-    public record Result(List<Vec3d> points, HitInfo hit) {}
+    public record Result(List<Vec3> points, HitInfo hit) {}
 
     public interface HitInfo {
-        Vec3d pos();
+        Vec3 pos();
 
         final class BlockHit implements HitInfo {
-            private final Vec3d pos;
+            private final Vec3 pos;
             private final BlockHitResult bhr;
-            private final Box hitBoxWorld;
+            private final AABB hitBoxWorld;
 
-            public BlockHit(Vec3d pos, BlockHitResult bhr, Box hitBoxWorld) {
+            public BlockHit(Vec3 pos, BlockHitResult bhr, AABB hitBoxWorld) {
                 this.pos = pos;
                 this.bhr = bhr;
                 this.hitBoxWorld = hitBoxWorld;
             }
 
-            @Override public Vec3d pos() { return pos; }
+            @Override public Vec3 pos() { return pos; }
             public BlockHitResult bhr() { return bhr; }
-            public Box hitBoxWorld() { return hitBoxWorld; }
+            public AABB hitBoxWorld() { return hitBoxWorld; }
         }
 
         final class EntityHit implements HitInfo {
-            private final Vec3d pos;
+            private final Vec3 pos;
             private final Entity entity;
 
-            public EntityHit(Vec3d pos, Entity entity) {
+            public EntityHit(Vec3 pos, Entity entity) {
                 this.pos = pos;
                 this.entity = entity;
             }
 
-            @Override public Vec3d pos() { return pos; }
+            @Override public Vec3 pos() { return pos; }
             public Entity entity() { return entity; }
         }
     }
 
     public static Result simulate(
             Entity owner,
-            Vec3d startPos,
-            Vec3d startVel,
+            Vec3 startPos,
+            Vec3 startVel,
             double gravity,
             double drag,
             int steps,
             double stepTime
     ) {
-        World world = owner.getEntityWorld();
+        Level world = owner.level();
         if (world == null) return null;
 
-        List<Vec3d> points = new ArrayList<>(steps + 1);
+        List<Vec3> points = new ArrayList<>(steps + 1);
 
-        Vec3d pos = startPos;
-        Vec3d vel = startVel;
+        Vec3 pos = startPos;
+        Vec3 vel = startVel;
 
         points.add(pos);
 
         HitInfo finalHit = null;
 
         for (int i = 0; i < steps; i++) {
-            Vec3d nextPos = pos.add(vel.multiply(stepTime));
+            Vec3 nextPos = pos.add(vel.scale(stepTime));
 
             HitInfo.EntityHit entHit = raycastEntity(owner, pos, nextPos);
             if (entHit != null) {
@@ -86,20 +86,20 @@ public final class TrajectorySim {
                 break;
             }
 
-            HitResult hit = world.raycast(new RaycastContext(
+            HitResult hit = world.clip(new ClipContext(
                     pos,
                     nextPos,
-                    RaycastContext.ShapeType.COLLIDER,
-                    RaycastContext.FluidHandling.NONE,
+                    ClipContext.Block.COLLIDER,
+                    ClipContext.Fluid.NONE,
                     owner
             ));
 
             if (hit.getType() != HitResult.Type.MISS) {
-                Vec3d hp = hit.getPos();
+                Vec3 hp = hit.getLocation();
                 points.add(hp);
 
                 if (hit instanceof BlockHitResult bhr) {
-                    Box hb = resolveBlockHitBox(world, bhr.getBlockPos(), pos, nextPos);
+                    AABB hb = resolveBlockHitBox(world, bhr.getBlockPos(), pos, nextPos);
                     finalHit = new HitInfo.BlockHit(hp, bhr, hb);
                 }
                 break;
@@ -107,40 +107,40 @@ public final class TrajectorySim {
 
             points.add(nextPos);
 
-            vel = vel.multiply(drag).add(0.0, -gravity, 0.0);
+            vel = vel.scale(drag).add(0.0, -gravity, 0.0);
             pos = nextPos;
         }
 
         return new Result(points, finalHit);
     }
 
-    private static HitInfo.EntityHit raycastEntity(Entity owner, Vec3d from, Vec3d to) {
-        World world = owner.getEntityWorld();
+    private static HitInfo.EntityHit raycastEntity(Entity owner, Vec3 from, Vec3 to) {
+        Level world = owner.level();
         if (world == null) return null;
 
-        Box sweep = new Box(from, to).expand(0.35);
+        AABB sweep = new AABB(from, to).inflate(0.35);
 
-        List<Entity> candidates = world.getOtherEntities(owner, sweep, e ->
+        List<Entity> candidates = world.getEntities(owner, sweep, e ->
                 e.isAlive()
                         && e instanceof LivingEntity
                         && !e.isSpectator()
-                        && e.canHit()
+                        && e.isAttackable()
         );
 
         if (candidates.isEmpty()) return null;
 
         Entity best = null;
-        Vec3d bestPos = null;
+        Vec3 bestPos = null;
         double bestDist2 = Double.MAX_VALUE;
 
         for (Entity e : candidates) {
-            Box bb = e.getBoundingBox().expand(ENTITY_HITBOX_PAD);
+            AABB bb = e.getBoundingBox().inflate(ENTITY_HITBOX_PAD);
 
-            var opt = bb.raycast(from, to);
+            var opt = bb.clip(from, to);
             if (opt.isEmpty()) continue;
 
-            Vec3d hp = opt.get();
-            double d2 = hp.squaredDistanceTo(from);
+            Vec3 hp = opt.get();
+            double d2 = hp.distanceToSqr(from);
             if (d2 < bestDist2) {
                 bestDist2 = d2;
                 best = e;
@@ -151,32 +151,32 @@ public final class TrajectorySim {
         return best == null ? null : new HitInfo.EntityHit(bestPos, best);
     }
 
-    private static Box resolveBlockHitBox(World world, BlockPos bp, Vec3d from, Vec3d to) {
+    private static AABB resolveBlockHitBox(Level world, BlockPos bp, Vec3 from, Vec3 to) {
         BlockState state = world.getBlockState(bp);
         VoxelShape shape = state.getCollisionShape(world, bp);
-        List<Box> boxes = shape.getBoundingBoxes();
+        List<AABB> boxes = shape.toAabbs();
 
         if (boxes.isEmpty()) {
-            return new Box(bp).expand(ENTITY_HITBOX_PAD);
+            return new AABB(bp).inflate(ENTITY_HITBOX_PAD);
         }
 
-        Box best = null;
+        AABB best = null;
         double bestDist2 = Double.MAX_VALUE;
 
-        for (Box local : boxes) {
-            Box wb = local.offset(bp).expand(ENTITY_HITBOX_PAD);
+        for (AABB local : boxes) {
+            AABB wb = local.move(bp.getX(), bp.getY(), bp.getZ()).inflate(ENTITY_HITBOX_PAD);
 
-            var opt = wb.raycast(from, to);
+            var opt = wb.clip(from, to);
             if (opt.isEmpty()) continue;
 
-            Vec3d hp = opt.get();
-            double d2 = hp.squaredDistanceTo(from);
+            Vec3 hp = opt.get();
+            double d2 = hp.distanceToSqr(from);
             if (d2 < bestDist2) {
                 bestDist2 = d2;
                 best = wb;
             }
         }
 
-        return best != null ? best : boxes.get(0).offset(bp).expand(ENTITY_HITBOX_PAD);
+        return best != null ? best : boxes.get(0).move(bp.getX(), bp.getY(), bp.getZ()).inflate(ENTITY_HITBOX_PAD);
     }
 }
