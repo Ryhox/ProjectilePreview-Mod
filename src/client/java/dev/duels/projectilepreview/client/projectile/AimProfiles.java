@@ -70,12 +70,26 @@ public final class AimProfiles {
         default Vec3 visualStartPos(Player p, ItemStack stack, float tickDelta) { return null; }
     }
 
+    private static Vec3 realPlayerViewVector(Player p) {
+        float yaw = p.getYRot();
+        float pitch = p.getXRot();
+
+        double yawRad = Math.toRadians(yaw);
+        double pitchRad = Math.toRadians(pitch);
+
+        double x = -Math.sin(yawRad) * Math.cos(pitchRad);
+        double y = -Math.sin(pitchRad);
+        double z = Math.cos(yawRad) * Math.cos(pitchRad);
+
+        return new Vec3(x, y, z);
+    }
+
     private static Vec3 handTipPos(Player p, float td, double f, double s, double u) {
         Vec3 eye = p.getEyePosition(td);
 
-        Vec3 forward = p.getViewVector(td).normalize();
+        Vec3 forward = realPlayerViewVector(p);
 
-        double yaw = Math.toRadians(p.getViewYRot(td));
+        double yaw = Math.toRadians(p.getYRot());
         Vec3 fwdYaw = new Vec3(-Math.sin(yaw), 0.0, Math.cos(yaw)).normalize();
 
         Vec3 right = new Vec3(0.0, 1.0, 0.0).cross(fwdYaw).normalize();
@@ -111,7 +125,7 @@ public final class AimProfiles {
     private static Vec3 aimPoint(Player p, float td, double maxDist) {
         var world = p.level();
         Vec3 eye = p.getEyePosition(td);
-        Vec3 dir = p.getViewVector(td).normalize();
+        Vec3 dir = realPlayerViewVector(p);
         Vec3 end = eye.add(dir.scale(maxDist));
 
         HitResult hit = world.clip(new ClipContext(
@@ -125,29 +139,27 @@ public final class AimProfiles {
     }
 
     private static Vec3 dirToCrosshair(Player p, float td, Vec3 startPos, double maxDist) {
-        if (!AIM_TO_CROSSHAIR) return p.getViewVector(td).normalize();
+        if (!AIM_TO_CROSSHAIR) return realPlayerViewVector(p);
 
         Vec3 target = aimPoint(p, td, maxDist);
         Vec3 d = target.subtract(startPos);
         double len = d.length();
-        if (len < 1e-6) return p.getViewVector(td).normalize();
+        if (len < 1e-6) return realPlayerViewVector(p);
         return d.scale(1.0 / len);
     }
 
-    private static Vec3 dirWithPitchOffset(Player p, float td, float pitchOffsetDeg) {
-        float yaw = p.getViewYRot(td);
-        float pitch = p.getViewXRot(td) + pitchOffsetDeg;
+    private static Vec3 dirWithPitchOffset(Player p, float pitchOffsetDeg) {
+        float yaw = p.getYRot();
+        float pitch = p.getXRot() + pitchOffsetDeg;
 
         double yawRad = Math.toRadians(yaw);
         double pitchRad = Math.toRadians(pitch);
 
         double x = -Math.sin(yawRad) * Math.cos(pitchRad);
         double y = -Math.sin(pitchRad);
-        double z =  Math.cos(yawRad) * Math.cos(pitchRad);
+        double z = Math.cos(yawRad) * Math.cos(pitchRad);
 
-        Vec3 v = new Vec3(x, y, z);
-        double len = v.length();
-        return len < 1e-6 ? p.getViewVector(td).normalize() : v.scale(1.0 / len);
+        return new Vec3(x, y, z);
     }
 
     private static double tridentChargeTicks(Player p, ItemStack trident, float td) {
@@ -212,8 +224,8 @@ public final class AimProfiles {
 
                 double t = tridentChargeTicks(p, p.getUseItem(), td);
 
-                Vec3 forward = p.getViewVector(td).normalize();
-                float yawDeg = p.getViewYRot(td);
+                Vec3 forward = realPlayerViewVector(p);
+                float yawDeg = p.getYRot();
                 double yaw = Math.toRadians(yawDeg);
                 Vec3 right = new Vec3(Math.cos(yaw), 0.0, Math.sin(yaw)).normalize();
                 Vec3 up = forward.cross(right).normalize();
@@ -273,7 +285,7 @@ public final class AimProfiles {
                 Vec3 start = startPos(p, td);
 
                 Vec3 dir = dirToCrosshair(p, td, start, AIM_MAX_DIST);
-                Vec3 off = dirWithPitchOffset(p, td, -20.0f);
+                Vec3 off = dirWithPitchOffset(p, -20.0f);
                 dir = dir.lerp(off, 0.65).normalize();
 
                 return List.of(dir.scale(0.7).add(p.getDeltaMovement()));
@@ -292,7 +304,7 @@ public final class AimProfiles {
                 Vec3 start = startPos(p, td);
 
                 Vec3 dir = dirToCrosshair(p, td, start, AIM_MAX_DIST);
-                Vec3 off = dirWithPitchOffset(p, td, -20.0f);
+                Vec3 off = dirWithPitchOffset(p, -20.0f);
                 dir = dir.lerp(off, 0.65).normalize();
 
                 return List.of(dir.scale(0.5).add(p.getDeltaMovement()));
