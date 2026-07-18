@@ -16,6 +16,9 @@
     "client": [
       "dev.duels.projectilepreview.client.ProjectilepreviewClient"
     ],
+    "modmenu": [
+      "dev.duels.projectilepreview.client.ModMenuIntegration"
+    ],
     "main": [
       "dev.duels.projectilepreview.Projectilepreview"
     ]

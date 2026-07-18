@@ -1,0 +1,200 @@
+package dev.duels.projectilepreview.client;
+
+import dev.duels.projectilepreview.client.projectile.AimProfiles;
+import dev.duels.projectilepreview.client.projectile.TrajectorySim;
+import net.fabricmc.fabric.api.client.gametest.v1.FabricClientGameTest;
+import net.fabricmc.fabric.api.client.gametest.v1.context.ClientGameTestContext;
+import net.fabricmc.fabric.api.client.gametest.v1.context.TestSingleplayerContext;
+import net.minecraft.client.gui.screens.worldselection.WorldCreationUiState;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.projectile.arrow.AbstractArrow;
+import net.minecraft.world.entity.projectile.throwableitemprojectile.Snowball;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.phys.Vec3;
+import org.lwjgl.glfw.GLFW;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/** TEMP TEST: measures predicted vs. actual server-side projectile paths. */
+public final class PreviewAccuracyTest implements FabricClientGameTest {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger("projectilepreview-accuracy");
+
+    @Override
+    public void runTest(ClientGameTestContext ctx) {
+        try (TestSingleplayerContext sp = ctx.worldBuilder()
+                .adjustSettings(settings -> {
+                    settings.setGameMode(WorldCreationUiState.SelectedGameMode.CREATIVE);
+                    settings.setAllowCommands(true);
+                })
+                .create()) {
+            sp.getClientLevel().waitForChunksRender();
+
+            snowballPhysicsTest(ctx, sp);
+            arrowImpactTest(ctx, sp);
+        }
+    }
+
+    /** Throws a snowball and re-simulates from the first observed server state. */
+    private void snowballPhysicsTest(ClientGameTestContext ctx, TestSingleplayerContext sp) {
+        ctx.runOnClient(mc -> {
+            mc.player.connection.sendCommand("give @s minecraft:snowball");
+            mc.player.setYRot(35.0f);
+            mc.player.setXRot(-6.0f);
+        });
+        ctx.waitTicks(20);
+
+        Vec3[] prediction = new Vec3[1];
+        List<Vec3> predictedPath = new ArrayList<>();
+        ctx.runOnClient(mc -> {
+            var player = mc.player;
+            ItemStack stack = player.getMainHandItem();
+            var profile = AimProfiles.match(player, stack);
+            Vec3 start = profile.startPos(player, 1.0f);
+            Vec3 vel = profile.startVels(player, stack, 1.0f).get(0);
+            prediction[0] = vel;
+            var res = TrajectorySim.simulate(player, start, vel,
+                    profile.gravity(), profile.drag(), 60, 1.0, profile.decayBeforeMove());
+            predictedPath.addAll(res.points());
+            LOGGER.info("SNOWBALL predicted start={} vel={} impact={}", start, vel, res.points().getLast());
+        });
+
+        ctx.getInput().holdMouse(GLFW.GLFW_MOUSE_BUTTON_RIGHT);
+        ctx.waitTick();
+        ctx.getInput().releaseMouse(GLFW.GLFW_MOUSE_BUTTON_RIGHT);
+
+        List<Vec3> actualPos = new ArrayList<>();
+        List<Vec3> actualVel = new ArrayList<>();
+        for (int t = 0; t < 25; t++) {
+            Vec3[] state = sp.getServer().computeOnServer(server -> {
+                for (var lvl : server.getAllLevels()) {
+                    for (Entity e : lvl.getAllEntities()) {
+                        if (e instanceof Snowball) {
+                            return new Vec3[]{e.position(), e.getDeltaMovement()};
+                        }
+                    }
+                }
+                return null;
+            });
+            if (state != null) {
+                actualPos.add(state[0]);
+                actualVel.add(state[1]);
+            }
+            ctx.waitTick();
+        }
+
+        if (actualPos.size() < 5) {
+            LOGGER.info("SNOWBALL not enough samples: {}", actualPos.size());
+            return;
+        }
+
+        LOGGER.info("SNOWBALL first observed pos={} vel={}", actualPos.get(0), actualVel.get(0));
+
+        // Physics exactness: re-simulate from the first observed server state.
+        Vec3 pos = actualPos.get(0);
+        Vec3 vel = actualVel.get(0);
+        double maxErr = 0.0;
+        for (int i = 1; i < actualPos.size(); i++) {
+            vel = vel.add(0.0, -0.03, 0.0).scale(0.99);
+            pos = pos.add(vel);
+            double err = pos.distanceTo(actualPos.get(i));
+            maxErr = Math.max(maxErr, err);
+        }
+        LOGGER.info("SNOWBALL physics max error over {} ticks: {}", actualPos.size() - 1, maxErr);
+
+        // Prediction match: nearest distance of each actual sample to the predicted path.
+        double worst = 0.0;
+        for (Vec3 a : actualPos) {
+            double best = Double.MAX_VALUE;
+            for (Vec3 p : predictedPath) {
+                best = Math.min(best, p.distanceTo(a));
+            }
+            worst = Math.max(worst, best);
+        }
+        LOGGER.info("SNOWBALL worst distance from predicted path: {}", worst);
+    }
+
+    /** Full-draw bow shot; compares the predicted impact with the arrow's rest position. */
+    private void arrowImpactTest(ClientGameTestContext ctx, TestSingleplayerContext sp) {
+        ctx.runOnClient(mc -> {
+            mc.player.connection.sendCommand("clear @s");
+            mc.player.connection.sendCommand("give @s minecraft:bow");
+            mc.player.setYRot(-20.0f);
+            mc.player.setXRot(-4.0f);
+        });
+        ctx.waitTicks(20);
+
+        ctx.getInput().holdMouse(GLFW.GLFW_MOUSE_BUTTON_RIGHT);
+        ctx.waitTicks(30);
+
+        Vec3[] predictedImpact = new Vec3[1];
+        ctx.runOnClient(mc -> {
+            var player = mc.player;
+            ItemStack stack = player.getMainHandItem();
+            var profile = AimProfiles.match(player, stack);
+            Vec3 start = profile.startPos(player, 1.0f);
+            Vec3 vel = profile.startVels(player, stack, 1.0f).get(0);
+            var res = TrajectorySim.simulate(player, start, vel,
+                    profile.gravity(), profile.drag(), 100, 1.0, profile.decayBeforeMove());
+            predictedImpact[0] = res.points().getLast();
+            LOGGER.info("ARROW predicted start={} vel={} impact={}", start, vel, predictedImpact[0]);
+        });
+
+        ctx.getInput().releaseMouse(GLFW.GLFW_MOUSE_BUTTON_RIGHT);
+
+        List<Vec3> actualPos = new ArrayList<>();
+        List<Vec3> actualVel = new ArrayList<>();
+        for (int t = 0; t < 20; t++) {
+            Vec3[] state = sp.getServer().computeOnServer(server -> {
+                for (var lvl : server.getAllLevels()) {
+                    for (Entity e : lvl.getAllEntities()) {
+                        if (e instanceof AbstractArrow && e.getDeltaMovement().lengthSqr() > 1.0E-4) {
+                            return new Vec3[]{e.position(), e.getDeltaMovement()};
+                        }
+                    }
+                }
+                return null;
+            });
+            if (state != null) {
+                actualPos.add(state[0]);
+                actualVel.add(state[1]);
+            }
+            ctx.waitTick();
+        }
+
+        ctx.waitTicks(100);
+        Vec3 rest = sp.getServer().computeOnServer(server -> {
+            for (var lvl : server.getAllLevels()) {
+                for (Entity e : lvl.getAllEntities()) {
+                    if (e instanceof AbstractArrow) {
+                        return e.position();
+                    }
+                }
+            }
+            return null;
+        });
+
+        if (actualPos.size() >= 3) {
+            LOGGER.info("ARROW first observed pos={} vel={}", actualPos.get(0), actualVel.get(0));
+
+            Vec3 pos = actualPos.get(0);
+            Vec3 vel = actualVel.get(0);
+            double maxErr = 0.0;
+            for (int i = 1; i < actualPos.size(); i++) {
+                pos = pos.add(vel);
+                vel = vel.scale(0.99).add(0.0, -0.05, 0.0);
+                double err = pos.distanceTo(actualPos.get(i));
+                maxErr = Math.max(maxErr, err);
+            }
+            LOGGER.info("ARROW physics max error over {} ticks: {}", actualPos.size() - 1, maxErr);
+        }
+
+        if (rest != null) {
+            LOGGER.info("ARROW actual rest={} predicted impact={} delta={}",
+                    rest, predictedImpact[0], rest.distanceTo(predictedImpact[0]));
+        }
+    }
+}

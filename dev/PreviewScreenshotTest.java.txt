@@ -1,0 +1,53 @@
+package dev.duels.projectilepreview.client;
+
+import net.fabricmc.fabric.api.client.gametest.v1.FabricClientGameTest;
+import net.fabricmc.fabric.api.client.gametest.v1.context.ClientGameTestContext;
+import net.fabricmc.fabric.api.client.gametest.v1.context.TestSingleplayerContext;
+import net.minecraft.client.gui.screens.worldselection.WorldCreationUiState;
+import org.lwjgl.glfw.GLFW;
+
+/** TEMP TEST: captures in-game screenshots of the preview for visual verification. */
+public final class PreviewScreenshotTest implements FabricClientGameTest {
+
+    @Override
+    public void runTest(ClientGameTestContext ctx) {
+        try (TestSingleplayerContext sp = ctx.worldBuilder()
+                .adjustSettings(settings -> {
+                    settings.setGameMode(WorldCreationUiState.SelectedGameMode.CREATIVE);
+                    settings.setAllowCommands(true);
+                })
+                .create()) {
+            sp.getClientLevel().waitForChunksRender();
+
+            ctx.runOnClient(mc -> {
+                mc.player.connection.sendCommand("give @s minecraft:bow");
+                mc.player.setYRot(0.0f);
+                mc.player.setXRot(-12.0f);
+            });
+            ctx.waitTicks(20);
+
+            ctx.getInput().holdMouse(GLFW.GLFW_MOUSE_BUTTON_RIGHT);
+            ctx.waitTicks(30);
+            ctx.takeScreenshot("design-bow");
+            ctx.getInput().releaseMouse(GLFW.GLFW_MOUSE_BUTTON_RIGHT);
+            ctx.waitTicks(5);
+
+            ctx.runOnClient(mc -> {
+                mc.player.connection.sendCommand("clear @s");
+                mc.player.connection.sendCommand("give @s minecraft:snowball");
+                mc.player.connection.sendCommand("summon minecraft:iron_golem ~ ~ ~7 {NoAI:1b}");
+                mc.player.setXRot(4.0f);
+            });
+            ctx.waitTicks(20);
+            ctx.takeScreenshot("design-golem-box");
+
+            ctx.runOnClient(mc -> {
+                mc.player.connection.sendCommand("kill @e[type=iron_golem]");
+                mc.player.connection.sendCommand("setblock ~ ~1 ~5 minecraft:sandstone");
+                mc.player.setXRot(0.0f);
+            });
+            ctx.waitTicks(20);
+            ctx.takeScreenshot("design-block-fill");
+        }
+    }
+}

@@ -12,8 +12,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Steps the projectile forward tick by tick using the exact vanilla physics:
- * position += velocity, then velocity = velocity * drag - gravity.
+ * Steps the projectile forward tick by tick using the exact vanilla physics.
+ * Arrows move first and then decay their velocity; throwables apply gravity
+ * and drag before moving (26.2 ThrowableProjectile.tick order).
  */
 public final class TrajectorySim {
     private TrajectorySim() {}
@@ -39,35 +40,70 @@ public final class TrajectorySim {
             double gravity,
             double drag,
             int steps,
-            double stepTime
+            double stepTime,
+            boolean decayBeforeMove
     ) {
         Level world = owner.level();
         if (world == null) return null;
 
-        List<Vec3> points = new ArrayList<>(steps + 1);
+        // First integrate the pure physics path, so entities can be gathered in one query.
+        Vec3[] path = new Vec3[steps + 1];
+        path[0] = startPos;
 
         Vec3 pos = startPos;
         Vec3 vel = startVel;
 
-        points.add(pos);
+        double minX = pos.x, minY = pos.y, minZ = pos.z;
+        double maxX = pos.x, maxY = pos.y, maxZ = pos.z;
+
+        for (int i = 1; i <= steps; i++) {
+            if (decayBeforeMove) {
+                vel = vel.add(0.0, -gravity, 0.0).scale(drag);
+            }
+
+            pos = pos.add(vel.scale(stepTime));
+            path[i] = pos;
+
+            minX = Math.min(minX, pos.x); maxX = Math.max(maxX, pos.x);
+            minY = Math.min(minY, pos.y); maxY = Math.max(maxY, pos.y);
+            minZ = Math.min(minZ, pos.z); maxZ = Math.max(maxZ, pos.z);
+
+            if (!decayBeforeMove) {
+                vel = vel.scale(drag).add(0.0, -gravity, 0.0);
+            }
+        }
+
+        AABB searchBox = new AABB(minX, minY, minZ, maxX, maxY, maxZ).inflate(ENTITY_SEARCH_INFLATE);
+
+        // Same targeting rules as Projectile.canHitEntity.
+        List<Entity> candidates = world.getEntities(owner, searchBox, e ->
+                e.isAlive()
+                        && !e.isSpectator()
+                        && e.isPickable()
+                        && !owner.isPassengerOfSameVehicle(e)
+        );
+
+        List<Vec3> points = new ArrayList<>(steps + 1);
+        points.add(path[0]);
 
         HitInfo finalHit = null;
 
         for (int i = 0; i < steps; i++) {
-            Vec3 nextPos = pos.add(vel.scale(stepTime));
+            Vec3 from = path[i];
+            Vec3 to = path[i + 1];
 
             // Vanilla clips blocks first, then looks for entities up to the block hit.
             HitResult blockHit = world.clip(new ClipContext(
-                    pos,
-                    nextPos,
+                    from,
+                    to,
                     ClipContext.Block.COLLIDER,
                     ClipContext.Fluid.NONE,
                     owner
             ));
 
-            Vec3 segmentEnd = blockHit.getType() != HitResult.Type.MISS ? blockHit.getLocation() : nextPos;
+            Vec3 segmentEnd = blockHit.getType() != HitResult.Type.MISS ? blockHit.getLocation() : to;
 
-            HitInfo.EntityHit entHit = raycastEntity(owner, pos, segmentEnd);
+            HitInfo.EntityHit entHit = nearestEntityHit(candidates, from, segmentEnd);
             if (entHit != null) {
                 points.add(entHit.pos());
                 finalHit = entHit;
@@ -82,30 +118,13 @@ public final class TrajectorySim {
                 break;
             }
 
-            points.add(nextPos);
-
-            vel = vel.scale(drag).add(0.0, -gravity, 0.0);
-            pos = nextPos;
+            points.add(to);
         }
 
         return new Result(points, finalHit);
     }
 
-    private static HitInfo.EntityHit raycastEntity(Entity owner, Vec3 from, Vec3 to) {
-        Level world = owner.level();
-
-        AABB sweep = new AABB(from, to).inflate(ENTITY_SEARCH_INFLATE);
-
-        // Same targeting rules as Projectile.canHitEntity.
-        List<Entity> candidates = world.getEntities(owner, sweep, e ->
-                e.isAlive()
-                        && !e.isSpectator()
-                        && e.isPickable()
-                        && !owner.isPassengerOfSameVehicle(e)
-        );
-
-        if (candidates.isEmpty()) return null;
-
+    private static HitInfo.EntityHit nearestEntityHit(List<Entity> candidates, Vec3 from, Vec3 to) {
         Entity best = null;
         Vec3 bestPos = null;
         double bestDist2 = Double.MAX_VALUE;

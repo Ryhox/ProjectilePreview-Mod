@@ -4,6 +4,8 @@ import net.minecraft.core.Holder;
 import net.minecraft.core.RegistryAccess;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.util.Mth;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.HumanoidArm;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BowItem;
 import net.minecraft.world.item.CrossbowItem;
@@ -91,10 +93,45 @@ public final class AimProfiles {
     public interface Profile {
         default int steps() { return DEFAULT_STEPS; }
         default double stepTime() { return 1.0; }
+
+        /** Throwables decay velocity before moving; arrows move first. */
+        default boolean decayBeforeMove() { return true; }
+
         double drag();
         double gravity();
         Vec3 startPos(Player p, float tickDelta);
         List<Vec3> startVels(Player p, ItemStack stack, float tickDelta);
+
+        /** Where the rendered line begins when the hand origin is selected. */
+        Vec3 visualStartPos(Player p, float tickDelta);
+    }
+
+    // Hand offsets (forward / side / up) matching the classic look of older releases.
+    private static final double BOW_HAND_F = 0.45, BOW_HAND_S = -0.35, BOW_HAND_U = -0.08;
+    private static final double CROSSBOW_HAND_F = 0.10, CROSSBOW_HAND_S = 0.00, CROSSBOW_HAND_U = -0.08;
+    private static final double TRIDENT_HAND_F = 0.10, TRIDENT_HAND_S = -0.10, TRIDENT_HAND_U = 0.025;
+    private static final double THROW_HAND_F = 0.15, THROW_HAND_S = -0.20, THROW_HAND_U = -0.10;
+
+    private static Vec3 handTipPos(Player p, float td, double f, double s, double u) {
+        Vec3 eye = p.getEyePosition(td);
+
+        Vec3 forward = shootFromRotationDir(p, 0.0f);
+
+        double yaw = Math.toRadians(p.getYRot());
+        Vec3 fwdYaw = new Vec3(-Math.sin(yaw), 0.0, Math.cos(yaw)).normalize();
+
+        Vec3 right = new Vec3(0.0, 1.0, 0.0).cross(fwdYaw).normalize();
+        Vec3 up = forward.cross(right).normalize();
+
+        InteractionHand active = p.isUsingItem() ? p.getUsedItemHand() : InteractionHand.MAIN_HAND;
+        boolean mainArmRight = (p.getMainArm() == HumanoidArm.RIGHT);
+        boolean rightSide = (active == InteractionHand.MAIN_HAND) ? mainArmRight : !mainArmRight;
+        double sideSign = rightSide ? 1.0 : -1.0;
+
+        return eye
+                .add(forward.scale(f))
+                .add(right.scale(s * sideSign))
+                .add(up.scale(u));
     }
 
     // Matches Projectile.shootFromRotation: the roll offset only affects the y component.
@@ -147,6 +184,11 @@ public final class AimProfiles {
     private static final class Profiles {
 
         static final Profile BOW = new Profile() {
+            public Vec3 visualStartPos(Player p, float td) {
+                return handTipPos(p, td, BOW_HAND_F, BOW_HAND_S, BOW_HAND_U);
+            }
+
+            public boolean decayBeforeMove() { return false; }
             public int steps() { return ARROW_STEPS; }
             public double drag() { return DEFAULT_DRAG; }
             public double gravity() { return ARROW_GRAVITY; }
@@ -163,6 +205,11 @@ public final class AimProfiles {
         };
 
         static final Profile CROSSBOW = new Profile() {
+            public Vec3 visualStartPos(Player p, float td) {
+                return handTipPos(p, td, CROSSBOW_HAND_F, CROSSBOW_HAND_S, CROSSBOW_HAND_U);
+            }
+
+            public boolean decayBeforeMove() { return false; }
             public int steps() { return ARROW_STEPS; }
             public double drag() { return DEFAULT_DRAG; }
             public double gravity() { return ARROW_GRAVITY; }
@@ -184,6 +231,11 @@ public final class AimProfiles {
         };
 
         static final Profile TRIDENT = new Profile() {
+            public Vec3 visualStartPos(Player p, float td) {
+                return handTipPos(p, td, TRIDENT_HAND_F, TRIDENT_HAND_S, TRIDENT_HAND_U);
+            }
+
+            public boolean decayBeforeMove() { return false; }
             public int steps() { return ARROW_STEPS; }
             public double drag() { return DEFAULT_DRAG; }
             public double gravity() { return ARROW_GRAVITY; }
@@ -199,6 +251,10 @@ public final class AimProfiles {
         };
 
         static final Profile SNOW_EGG = new Profile() {
+            public Vec3 visualStartPos(Player p, float td) {
+                return handTipPos(p, td, THROW_HAND_F, THROW_HAND_S, THROW_HAND_U);
+            }
+
             public double drag() { return DEFAULT_DRAG; }
             public double gravity() { return THROWN_GRAVITY; }
 
@@ -212,6 +268,10 @@ public final class AimProfiles {
         };
 
         static final Profile PEARL = new Profile() {
+            public Vec3 visualStartPos(Player p, float td) {
+                return handTipPos(p, td, THROW_HAND_F, THROW_HAND_S, THROW_HAND_U);
+            }
+
             public double drag() { return DEFAULT_DRAG; }
             public double gravity() { return THROWN_GRAVITY; }
 
@@ -225,6 +285,10 @@ public final class AimProfiles {
         };
 
         static final Profile XP_BOTTLE = new Profile() {
+            public Vec3 visualStartPos(Player p, float td) {
+                return handTipPos(p, td, THROW_HAND_F, THROW_HAND_S, THROW_HAND_U);
+            }
+
             public double drag() { return DEFAULT_DRAG; }
             public double gravity() { return XP_BOTTLE_GRAVITY; }
 
@@ -238,6 +302,10 @@ public final class AimProfiles {
         };
 
         static final Profile POTION = new Profile() {
+            public Vec3 visualStartPos(Player p, float td) {
+                return handTipPos(p, td, THROW_HAND_F, THROW_HAND_S, THROW_HAND_U);
+            }
+
             public double drag() { return DEFAULT_DRAG; }
             public double gravity() { return POTION_GRAVITY; }
 
@@ -252,6 +320,10 @@ public final class AimProfiles {
 
         // Wind charges fly dead straight: no gravity, no drag, spawned at full eye height.
         static final Profile WIND = new Profile() {
+            public Vec3 visualStartPos(Player p, float td) {
+                return handTipPos(p, td, THROW_HAND_F, THROW_HAND_S, THROW_HAND_U);
+            }
+
             public double drag() { return 1.0; }
             public double gravity() { return 0.0; }
 

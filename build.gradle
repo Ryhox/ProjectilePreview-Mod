@@ -13,6 +13,14 @@ base {
 loom {
     splitEnvironmentSourceSets()
 
+    runs {
+        gametest {
+            inherit client
+            vmArg "-Dfabric.client.gametest"
+            runDir "run/gametest"
+        }
+    }
+
     mods {
         "projectilepreview" {
             sourceSet sourceSets.main
@@ -27,11 +35,20 @@ fabricApi {
     }
 }
 
+repositories {
+    maven {
+        name = 'TerraformersMC'
+        url = 'https://maven.terraformersmc.com/releases/'
+    }
+}
+
 dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
 
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
     implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+    compileOnly "com.terraformersmc:modmenu:${project.modmenu_version}"
 }
 
 processResources {
