@@ -22,7 +22,7 @@
 
 ## Compatibility
 
-- Minecraft **1.21.2 – 1.21.8**
+- Minecraft **26.2**
 - Fabric Loader required
 - Fabric API required
 

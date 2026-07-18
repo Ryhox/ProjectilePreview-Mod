@@ -1,22 +1,17 @@
 package dev.duels.projectilepreview.client.projectile;
 
-import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
-import org.joml.Matrix4f;
 
 import java.util.List;
 
 public final class AimPreviewRenderer {
     private AimPreviewRenderer() {}
 
-    public static void render(DeltaTracker deltaTracker, Camera camera, Matrix4f positionMatrix, MultiBufferSource consumers) {
-        if (deltaTracker == null || camera == null || positionMatrix == null || consumers == null) return;
-
+    public static void render(DeltaTracker deltaTracker) {
         Minecraft client = Minecraft.getInstance();
         if (client.level == null) return;
 
@@ -33,14 +28,11 @@ public final class AimPreviewRenderer {
 
         Vec3 startPos = profile.startPos(player, tickDelta);
         List<Vec3> startVels = profile.startVels(player, stack, tickDelta);
-        if (startVels == null || startVels.isEmpty()) return;
+        if (startVels.isEmpty()) return;
 
-        Vec3 camPos = camera.position();
         boolean renderTrajectory = AimPreview.shouldRenderTrajectory();
 
         for (Vec3 startVel : startVels) {
-            if (startVel == null) continue;
-
             TrajectorySim.Result res = TrajectorySim.simulate(
                     player,
                     startPos,
@@ -54,11 +46,11 @@ public final class AimPreviewRenderer {
             if (res == null || res.points().size() < 2) continue;
 
             if (renderTrajectory) {
-                RenderUtils.drawPolyline(positionMatrix, consumers, res.points(), camPos);
+                RenderUtils.drawPolyline(res.points());
             }
 
             if (res.hit() != null) {
-                RenderUtils.drawHitOverlay(positionMatrix, consumers, res.hit(), camPos);
+                RenderUtils.drawHitOverlay(res.hit());
             }
         }
     }

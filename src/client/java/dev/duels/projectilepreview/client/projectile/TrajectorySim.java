@@ -1,58 +1,35 @@
 package dev.duels.projectilepreview.client.projectile;
 
-import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
-import net.minecraft.world.phys.shapes.VoxelShape;
 
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Steps the projectile forward tick by tick using the exact vanilla physics:
+ * position += velocity, then velocity = velocity * drag - gravity.
+ */
 public final class TrajectorySim {
     private TrajectorySim() {}
 
-    public static final double ENTITY_HITBOX_PAD = 0.10;
+    // ProjectileUtil inflates entity hitboxes by 0.3 when testing projectile hits.
+    public static final double ENTITY_HITBOX_PAD = 0.3;
+    private static final double ENTITY_SEARCH_INFLATE = 1.0;
 
     public record Result(List<Vec3> points, HitInfo hit) {}
 
-    public interface HitInfo {
+    public sealed interface HitInfo {
         Vec3 pos();
 
-        final class BlockHit implements HitInfo {
-            private final Vec3 pos;
-            private final BlockHitResult bhr;
-            private final AABB hitBoxWorld;
+        record BlockHit(Vec3 pos, BlockHitResult bhr) implements HitInfo {}
 
-            public BlockHit(Vec3 pos, BlockHitResult bhr, AABB hitBoxWorld) {
-                this.pos = pos;
-                this.bhr = bhr;
-                this.hitBoxWorld = hitBoxWorld;
-            }
-
-            @Override public Vec3 pos() { return pos; }
-            public BlockHitResult bhr() { return bhr; }
-            public AABB hitBoxWorld() { return hitBoxWorld; }
-        }
-
-        final class EntityHit implements HitInfo {
-            private final Vec3 pos;
-            private final Entity entity;
-
-            public EntityHit(Vec3 pos, Entity entity) {
-                this.pos = pos;
-                this.entity = entity;
-            }
-
-            @Override public Vec3 pos() { return pos; }
-            public Entity entity() { return entity; }
-        }
+        record EntityHit(Vec3 pos, Entity entity) implements HitInfo {}
     }
 
     public static Result simulate(
@@ -79,14 +56,8 @@ public final class TrajectorySim {
         for (int i = 0; i < steps; i++) {
             Vec3 nextPos = pos.add(vel.scale(stepTime));
 
-            HitInfo.EntityHit entHit = raycastEntity(owner, pos, nextPos);
-            if (entHit != null) {
-                points.add(entHit.pos());
-                finalHit = entHit;
-                break;
-            }
-
-            HitResult hit = world.clip(new ClipContext(
+            // Vanilla clips blocks first, then looks for entities up to the block hit.
+            HitResult blockHit = world.clip(new ClipContext(
                     pos,
                     nextPos,
                     ClipContext.Block.COLLIDER,
@@ -94,13 +65,19 @@ public final class TrajectorySim {
                     owner
             ));
 
-            if (hit.getType() != HitResult.Type.MISS) {
-                Vec3 hp = hit.getLocation();
-                points.add(hp);
+            Vec3 segmentEnd = blockHit.getType() != HitResult.Type.MISS ? blockHit.getLocation() : nextPos;
 
-                if (hit instanceof BlockHitResult bhr) {
-                    AABB hb = resolveBlockHitBox(world, bhr.getBlockPos(), pos, nextPos);
-                    finalHit = new HitInfo.BlockHit(hp, bhr, hb);
+            HitInfo.EntityHit entHit = raycastEntity(owner, pos, segmentEnd);
+            if (entHit != null) {
+                points.add(entHit.pos());
+                finalHit = entHit;
+                break;
+            }
+
+            if (blockHit.getType() != HitResult.Type.MISS) {
+                points.add(segmentEnd);
+                if (blockHit instanceof BlockHitResult bhr) {
+                    finalHit = new HitInfo.BlockHit(segmentEnd, bhr);
                 }
                 break;
             }
@@ -116,15 +93,15 @@ public final class TrajectorySim {
 
     private static HitInfo.EntityHit raycastEntity(Entity owner, Vec3 from, Vec3 to) {
         Level world = owner.level();
-        if (world == null) return null;
 
-        AABB sweep = new AABB(from, to).inflate(0.35);
+        AABB sweep = new AABB(from, to).inflate(ENTITY_SEARCH_INFLATE);
 
+        // Same targeting rules as Projectile.canHitEntity.
         List<Entity> candidates = world.getEntities(owner, sweep, e ->
                 e.isAlive()
-                        && e instanceof LivingEntity
                         && !e.isSpectator()
-                        && e.isAttackable()
+                        && e.isPickable()
+                        && !owner.isPassengerOfSameVehicle(e)
         );
 
         if (candidates.isEmpty()) return null;
@@ -149,34 +126,5 @@ public final class TrajectorySim {
         }
 
         return best == null ? null : new HitInfo.EntityHit(bestPos, best);
-    }
-
-    private static AABB resolveBlockHitBox(Level world, BlockPos bp, Vec3 from, Vec3 to) {
-        BlockState state = world.getBlockState(bp);
-        VoxelShape shape = state.getCollisionShape(world, bp);
-        List<AABB> boxes = shape.toAabbs();
-
-        if (boxes.isEmpty()) {
-            return new AABB(bp).inflate(ENTITY_HITBOX_PAD);
-        }
-
-        AABB best = null;
-        double bestDist2 = Double.MAX_VALUE;
-
-        for (AABB local : boxes) {
-            AABB wb = local.move(bp.getX(), bp.getY(), bp.getZ()).inflate(ENTITY_HITBOX_PAD);
-
-            var opt = wb.clip(from, to);
-            if (opt.isEmpty()) continue;
-
-            Vec3 hp = opt.get();
-            double d2 = hp.distanceToSqr(from);
-            if (d2 < bestDist2) {
-                bestDist2 = d2;
-                best = wb;
-            }
-        }
-
-        return best != null ? best : boxes.get(0).move(bp.getX(), bp.getY(), bp.getZ()).inflate(ENTITY_HITBOX_PAD);
     }
 }

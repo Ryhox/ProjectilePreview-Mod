@@ -1,21 +1,30 @@
 package dev.duels.projectilepreview.client.projectile;
 
 import net.minecraft.core.Holder;
+import net.minecraft.core.RegistryAccess;
 import net.minecraft.core.registries.Registries;
-import net.minecraft.world.InteractionHand;
-import net.minecraft.world.entity.HumanoidArm;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.item.*;
+import net.minecraft.world.item.BowItem;
+import net.minecraft.world.item.CrossbowItem;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.TridentItem;
 import net.minecraft.world.item.enchantment.Enchantment;
 import net.minecraft.world.item.enchantment.EnchantmentHelper;
 import net.minecraft.world.item.enchantment.Enchantments;
-import net.minecraft.world.level.ClipContext;
-import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
 
 import java.util.List;
 import java.util.Set;
 
+/**
+ * Launch parameters mirroring the vanilla 26.2 item and projectile code exactly,
+ * so the predicted path matches where the projectile really lands.
+ */
 public final class AimProfiles {
     private AimProfiles() {}
 
@@ -24,34 +33,53 @@ public final class AimProfiles {
             Items.LINGERING_POTION
     );
 
-    private static final boolean AIM_TO_CROSSHAIR = true;
-    private static final double AIM_MAX_DIST = 128.0;
+    private static final float DEG_TO_RAD = 0.017453292f;
 
-    private static final double TRIDENT_RAISE_PER_TICK = 0.006;
-    private static final double TRIDENT_MAX_RAISE = 0.04;
-    private static final double TRIDENT_FORWARD_PER_TICK = 0.003;
-    private static final double TRIDENT_MAX_FORWARD = 0.02;
+    // Speeds and roll offsets from the vanilla item use() methods.
+    private static final float BOW_MAX_SPEED = 3.0f;
+    private static final float CROSSBOW_SPEED = 3.15f;
+    private static final float TRIDENT_SPEED = 2.5f;
+    private static final float THROWN_SPEED = 1.5f;
+    private static final float XP_BOTTLE_SPEED = 0.7f;
+    private static final float POTION_SPEED = 0.5f;
+    private static final float WIND_CHARGE_SPEED = 1.5f;
+    private static final float LOB_ROLL_DEG = -20.0f;
+
+    private static final float MIN_BOW_POWER = 0.1f;
+    private static final int TRIDENT_MIN_CHARGE_TICKS = 10;
+
+    // The multishot enchantment defines a 10 degree projectile spread.
+    private static final float MULTISHOT_SPREAD_DEG = 10.0f;
+
+    // Per-tick physics from the projectile entity classes.
+    private static final double DEFAULT_DRAG = 0.99;
+    private static final double ARROW_GRAVITY = 0.05;
+    private static final double THROWN_GRAVITY = 0.03;
+    private static final double POTION_GRAVITY = 0.05;
+    private static final double XP_BOTTLE_GRAVITY = 0.07;
+
+    // Projectiles spawn 0.1 below eye level, at the player's center.
+    private static final double SPAWN_EYE_OFFSET = 0.1;
+
+    private static final int DEFAULT_STEPS = 60;
+    private static final int ARROW_STEPS = 100;
 
     public static Profile match(Player player, ItemStack stack) {
         Item item = stack.getItem();
 
         if (item instanceof BowItem) {
-            if (!player.isUsingItem()) return null;
-            return Profiles.BOW;
+            return player.isUsingItem() ? Profiles.BOW : null;
         }
 
         if (item instanceof CrossbowItem) {
-            if (!CrossbowItem.isCharged(stack)) return null;
-            return Profiles.CROSSBOW;
+            return CrossbowItem.isCharged(stack) ? Profiles.CROSSBOW : null;
         }
 
         if (item instanceof TridentItem) {
-            if (!player.isUsingItem()) return null;
-            return Profiles.TRIDENT;
+            return player.isUsingItem() ? Profiles.TRIDENT : null;
         }
 
         if (item == Items.WIND_CHARGE) return Profiles.WIND;
-
         if (item == Items.EXPERIENCE_BOTTLE) return Profiles.XP_BOTTLE;
         if (POTIONS.contains(item)) return Profiles.POTION;
         if (item == Items.ENDER_PEARL) return Profiles.PEARL;
@@ -61,284 +89,180 @@ public final class AimProfiles {
     }
 
     public interface Profile {
-        default int steps() { return 60; }
+        default int steps() { return DEFAULT_STEPS; }
         default double stepTime() { return 1.0; }
         double drag();
         double gravity();
         Vec3 startPos(Player p, float tickDelta);
         List<Vec3> startVels(Player p, ItemStack stack, float tickDelta);
-        default Vec3 visualStartPos(Player p, ItemStack stack, float tickDelta) { return null; }
     }
 
-    private static Vec3 realPlayerViewVector(Player p) {
-        float yaw = p.getYRot();
-        float pitch = p.getXRot();
-
-        double yawRad = Math.toRadians(yaw);
-        double pitchRad = Math.toRadians(pitch);
-
-        double x = -Math.sin(yawRad) * Math.cos(pitchRad);
-        double y = -Math.sin(pitchRad);
-        double z = Math.cos(yawRad) * Math.cos(pitchRad);
-
-        return new Vec3(x, y, z);
+    // Matches Projectile.shootFromRotation: the roll offset only affects the y component.
+    private static Vec3 shootFromRotationDir(Player p, float roll) {
+        float xRot = p.getXRot();
+        float yRot = p.getYRot();
+        float x = -Mth.sin(yRot * DEG_TO_RAD) * Mth.cos(xRot * DEG_TO_RAD);
+        float y = -Mth.sin((xRot + roll) * DEG_TO_RAD);
+        float z = Mth.cos(yRot * DEG_TO_RAD) * Mth.cos(xRot * DEG_TO_RAD);
+        return new Vec3(x, y, z).normalize();
     }
 
-    private static Vec3 handTipPos(Player p, float td, double f, double s, double u) {
-        Vec3 eye = p.getEyePosition(td);
-
-        Vec3 forward = realPlayerViewVector(p);
-
-        double yaw = Math.toRadians(p.getYRot());
-        Vec3 fwdYaw = new Vec3(-Math.sin(yaw), 0.0, Math.cos(yaw)).normalize();
-
-        Vec3 right = new Vec3(0.0, 1.0, 0.0).cross(fwdYaw).normalize();
-        Vec3 up = forward.cross(right).normalize();
-
-        InteractionHand active = p.isUsingItem() ? p.getUsedItemHand() : InteractionHand.MAIN_HAND;
-        boolean mainArmRight = (p.getMainArm() == HumanoidArm.RIGHT);
-        boolean rightSide = (active == InteractionHand.MAIN_HAND) ? mainArmRight : !mainArmRight;
-        double sideSign = rightSide ? 1.0 : -1.0;
-
-        return eye
-                .add(forward.scale(f))
-                .add(right.scale(s * sideSign))
-                .add(up.scale(u));
+    // Shooter momentum is inherited, but vertical momentum only while airborne.
+    private static Vec3 launchVelocity(Player p, float roll, float power) {
+        Vec3 vel = shootFromRotationDir(p, roll).scale(power);
+        Vec3 move = p.getKnownMovement();
+        return vel.add(move.x, p.onGround() ? 0.0 : move.y, move.z);
     }
 
-    private static Vec3 rotateYaw(Vec3 v, double deg) {
-        double r = Math.toRadians(deg);
-        return new Vec3(
-                v.x * Math.cos(r) - v.z * Math.sin(r),
-                v.y,
-                v.x * Math.sin(r) + v.z * Math.cos(r)
-        );
+    private static Vec3 spawnPos(Player p, float td) {
+        Vec3 pos = p.getPosition(td);
+        return new Vec3(pos.x, p.getEyePosition(td).y - SPAWN_EYE_OFFSET, pos.z);
     }
 
+    // Crossbow arrows rotate the view vector around the up axis and ignore shooter momentum.
+    private static Vec3 crossbowVelocity(Player p, float angleDeg) {
+        Vec3 up = p.getUpVector(1.0f);
+        Vector3f dir = p.getViewVector(1.0f).toVector3f()
+                .rotate(new Quaternionf().setAngleAxis(angleDeg * DEG_TO_RAD, up.x, up.y, up.z));
+        return new Vec3(dir.x(), dir.y(), dir.z()).normalize().scale(CROSSBOW_SPEED);
+    }
+
+    private static RegistryAccess lastRegistryAccess;
+    private static Holder<Enchantment> multishotHolder;
+
+    // Cached per world join; only touched from the render thread.
     private static int multishotLevel(Player p, ItemStack stack) {
-        var registryAccess = p.registryAccess();
-        var enchRegistry = registryAccess.lookupOrThrow(Registries.ENCHANTMENT);
-        Holder<Enchantment> holder = enchRegistry.getOrThrow(Enchantments.MULTISHOT);
-        return EnchantmentHelper.getItemEnchantmentLevel(holder, stack);
+        RegistryAccess access = p.registryAccess();
+        if (access != lastRegistryAccess) {
+            multishotHolder = access.lookupOrThrow(Registries.ENCHANTMENT).getOrThrow(Enchantments.MULTISHOT);
+            lastRegistryAccess = access;
+        }
+        return EnchantmentHelper.getItemEnchantmentLevel(multishotHolder, stack);
     }
 
-    private static Vec3 aimPoint(Player p, float td, double maxDist) {
-        var world = p.level();
-        Vec3 eye = p.getEyePosition(td);
-        Vec3 dir = realPlayerViewVector(p);
-        Vec3 end = eye.add(dir.scale(maxDist));
-
-        HitResult hit = world.clip(new ClipContext(
-                eye, end,
-                ClipContext.Block.COLLIDER,
-                ClipContext.Fluid.NONE,
-                p
-        ));
-
-        return hit.getType() == HitResult.Type.MISS ? end : hit.getLocation();
-    }
-
-    private static Vec3 dirToCrosshair(Player p, float td, Vec3 startPos, double maxDist) {
-        if (!AIM_TO_CROSSHAIR) return realPlayerViewVector(p);
-
-        Vec3 target = aimPoint(p, td, maxDist);
-        Vec3 d = target.subtract(startPos);
-        double len = d.length();
-        if (len < 1e-6) return realPlayerViewVector(p);
-        return d.scale(1.0 / len);
-    }
-
-    private static Vec3 dirWithPitchOffset(Player p, float pitchOffsetDeg) {
-        float yaw = p.getYRot();
-        float pitch = p.getXRot() + pitchOffsetDeg;
-
-        double yawRad = Math.toRadians(yaw);
-        double pitchRad = Math.toRadians(pitch);
-
-        double x = -Math.sin(yawRad) * Math.cos(pitchRad);
-        double y = -Math.sin(pitchRad);
-        double z = Math.cos(yawRad) * Math.cos(pitchRad);
-
-        return new Vec3(x, y, z);
-    }
-
-    private static double tridentChargeTicks(Player p, ItemStack trident, float td) {
-        // TODO: verify getUseDuration / getUseItemRemainingTicks if compile errors appear
-        int used = trident.getUseDuration(p) - p.getUseItemRemainingTicks();
-        return used + td;
-    }
-
-    private static Vec3 windChargeStartPos(Player p, float td) {
-        Vec3 base = p.position();
-        Vec3 eye = p.getEyePosition(td);
-        return new Vec3(base.x, eye.y, base.z);
+    private static int useTicks(Player p, ItemStack stack) {
+        return stack.getUseDuration(p) - p.getUseItemRemainingTicks();
     }
 
     private static final class Profiles {
 
         static final Profile BOW = new Profile() {
-            public double drag() { return 0.99; }
-            public double gravity() { return 0.05; }
+            public int steps() { return ARROW_STEPS; }
+            public double drag() { return DEFAULT_DRAG; }
+            public double gravity() { return ARROW_GRAVITY; }
 
             public Vec3 startPos(Player p, float td) {
-                return handTipPos(p, td, StartPosTuning.BOW_F, StartPosTuning.BOW_S, StartPosTuning.BOW_U);
+                return spawnPos(p, td);
             }
 
             public List<Vec3> startVels(Player p, ItemStack s, float td) {
-                // TODO: verify BowItem.getPowerForTime — may be getPullProgress if compile error
-                int used = s.getUseDuration(p) - p.getUseItemRemainingTicks();
-                float pull = BowItem.getPowerForTime(used);
-                if (pull < 0.05f) return List.of();
-
-                Vec3 start = startPos(p, td);
-                Vec3 dir = dirToCrosshair(p, td, start, AIM_MAX_DIST);
-                return List.of(dir.scale(3.0 * pull).add(p.getDeltaMovement()));
+                float power = BowItem.getPowerForTime(useTicks(p, s));
+                if (power < MIN_BOW_POWER) return List.of();
+                return List.of(launchVelocity(p, 0.0f, power * BOW_MAX_SPEED));
             }
         };
 
         static final Profile CROSSBOW = new Profile() {
-            public double drag() { return 0.99; }
-            public double gravity() { return 0.05; }
+            public int steps() { return ARROW_STEPS; }
+            public double drag() { return DEFAULT_DRAG; }
+            public double gravity() { return ARROW_GRAVITY; }
 
             public Vec3 startPos(Player p, float td) {
-                return handTipPos(p, td, StartPosTuning.CROSS_F, StartPosTuning.CROSS_S, StartPosTuning.CROSS_U);
+                return spawnPos(p, td);
             }
 
             public List<Vec3> startVels(Player p, ItemStack s, float td) {
-                Vec3 start = startPos(p, td);
-                Vec3 dir = dirToCrosshair(p, td, start, AIM_MAX_DIST);
-                Vec3 base = dir.scale(3.15).add(p.getDeltaMovement());
-
-                int ms = multishotLevel(p, s);
-                if (ms > 0) return List.of(rotateYaw(base, -10), base, rotateYaw(base, 10));
-                return List.of(base);
+                if (multishotLevel(p, s) > 0) {
+                    return List.of(
+                            crossbowVelocity(p, -MULTISHOT_SPREAD_DEG),
+                            crossbowVelocity(p, 0.0f),
+                            crossbowVelocity(p, MULTISHOT_SPREAD_DEG)
+                    );
+                }
+                return List.of(crossbowVelocity(p, 0.0f));
             }
         };
 
         static final Profile TRIDENT = new Profile() {
-            public double drag() { return 0.99; }
-            public double gravity() { return 0.05; }
+            public int steps() { return ARROW_STEPS; }
+            public double drag() { return DEFAULT_DRAG; }
+            public double gravity() { return ARROW_GRAVITY; }
 
             public Vec3 startPos(Player p, float td) {
-                Vec3 base = handTipPos(p, td, StartPosTuning.TRIDENT_F, StartPosTuning.TRIDENT_S, StartPosTuning.TRIDENT_U);
-
-                double t = tridentChargeTicks(p, p.getUseItem(), td);
-
-                Vec3 forward = realPlayerViewVector(p);
-                float yawDeg = p.getYRot();
-                double yaw = Math.toRadians(yawDeg);
-                Vec3 right = new Vec3(Math.cos(yaw), 0.0, Math.sin(yaw)).normalize();
-                Vec3 up = forward.cross(right).normalize();
-
-                double raise = Math.min(TRIDENT_MAX_RAISE, t * TRIDENT_RAISE_PER_TICK);
-                double fwd = Math.min(TRIDENT_MAX_FORWARD, t * TRIDENT_FORWARD_PER_TICK);
-
-                return base.add(up.scale(raise)).add(forward.scale(fwd));
+                return spawnPos(p, td);
             }
 
             public List<Vec3> startVels(Player p, ItemStack s, float td) {
-                Vec3 start = startPos(p, td);
-                Vec3 dir = dirToCrosshair(p, td, start, AIM_MAX_DIST);
-                return List.of(dir.scale(3.0).add(p.getDeltaMovement()));
+                if (useTicks(p, s) < TRIDENT_MIN_CHARGE_TICKS) return List.of();
+                return List.of(launchVelocity(p, 0.0f, TRIDENT_SPEED));
             }
         };
 
         static final Profile SNOW_EGG = new Profile() {
-            public double drag() { return 0.99; }
-            public double gravity() { return 0.03; }
+            public double drag() { return DEFAULT_DRAG; }
+            public double gravity() { return THROWN_GRAVITY; }
 
             public Vec3 startPos(Player p, float td) {
-                return handTipPos(p, td, StartPosTuning.THROW_F, StartPosTuning.THROW_S, StartPosTuning.THROW_U);
+                return spawnPos(p, td);
             }
 
             public List<Vec3> startVels(Player p, ItemStack s, float td) {
-                Vec3 start = startPos(p, td);
-                Vec3 dir = dirToCrosshair(p, td, start, AIM_MAX_DIST);
-                return List.of(dir.scale(1.5).add(p.getDeltaMovement()));
+                return List.of(launchVelocity(p, 0.0f, THROWN_SPEED));
             }
         };
 
         static final Profile PEARL = new Profile() {
-            public double drag() { return 0.99; }
-            public double gravity() { return 0.03; }
+            public double drag() { return DEFAULT_DRAG; }
+            public double gravity() { return THROWN_GRAVITY; }
 
             public Vec3 startPos(Player p, float td) {
-                return handTipPos(p, td, StartPosTuning.THROW_F, StartPosTuning.THROW_S, StartPosTuning.THROW_U);
+                return spawnPos(p, td);
             }
 
             public List<Vec3> startVels(Player p, ItemStack s, float td) {
-                Vec3 start = startPos(p, td);
-                Vec3 dir = dirToCrosshair(p, td, start, AIM_MAX_DIST);
-                return List.of(dir.scale(1.5).add(p.getDeltaMovement()));
+                return List.of(launchVelocity(p, 0.0f, THROWN_SPEED));
             }
         };
 
         static final Profile XP_BOTTLE = new Profile() {
-            public double drag() { return 0.99; }
-            public double gravity() { return 0.07; }
+            public double drag() { return DEFAULT_DRAG; }
+            public double gravity() { return XP_BOTTLE_GRAVITY; }
 
             public Vec3 startPos(Player p, float td) {
-                return handTipPos(p, td, StartPosTuning.THROW_F, StartPosTuning.THROW_S, StartPosTuning.THROW_U);
+                return spawnPos(p, td);
             }
 
             public List<Vec3> startVels(Player p, ItemStack s, float td) {
-                Vec3 start = startPos(p, td);
-
-                Vec3 dir = dirToCrosshair(p, td, start, AIM_MAX_DIST);
-                Vec3 off = dirWithPitchOffset(p, -20.0f);
-                dir = dir.lerp(off, 0.65).normalize();
-
-                return List.of(dir.scale(0.7).add(p.getDeltaMovement()));
+                return List.of(launchVelocity(p, LOB_ROLL_DEG, XP_BOTTLE_SPEED));
             }
         };
 
         static final Profile POTION = new Profile() {
-            public double drag() { return 0.99; }
-            public double gravity() { return 0.05; }
+            public double drag() { return DEFAULT_DRAG; }
+            public double gravity() { return POTION_GRAVITY; }
 
             public Vec3 startPos(Player p, float td) {
-                return handTipPos(p, td, StartPosTuning.THROW_F, StartPosTuning.THROW_S, StartPosTuning.THROW_U);
+                return spawnPos(p, td);
             }
 
             public List<Vec3> startVels(Player p, ItemStack s, float td) {
-                Vec3 start = startPos(p, td);
-
-                Vec3 dir = dirToCrosshair(p, td, start, AIM_MAX_DIST);
-                Vec3 off = dirWithPitchOffset(p, -20.0f);
-                dir = dir.lerp(off, 0.65).normalize();
-
-                return List.of(dir.scale(0.5).add(p.getDeltaMovement()));
+                return List.of(launchVelocity(p, LOB_ROLL_DEG, POTION_SPEED));
             }
         };
 
+        // Wind charges fly dead straight: no gravity, no drag, spawned at full eye height.
         static final Profile WIND = new Profile() {
-            public double drag() { return 0.995; }
+            public double drag() { return 1.0; }
             public double gravity() { return 0.0; }
 
             public Vec3 startPos(Player p, float td) {
-                return handTipPos(p, td, StartPosTuning.WIND_F, StartPosTuning.WIND_S, StartPosTuning.WIND_U);
+                Vec3 pos = p.getPosition(td);
+                return new Vec3(pos.x, p.getEyePosition(td).y, pos.z);
             }
 
             public List<Vec3> startVels(Player p, ItemStack s, float td) {
-                Vec3 start = startPos(p, td);
-
-                Vec3 dir = dirToCrosshair(p, td, start, AIM_MAX_DIST);
-                Vec3 vel = dir.scale(1.5);
-
-                Vec3 move = p.getDeltaMovement();
-                double my = p.onGround() ? 0.0 : move.y;
-                vel = vel.add(move.x, my, move.z);
-
-                return List.of(vel);
-            }
-
-            public Vec3 visualStartPos(Player p, ItemStack s, float td) {
-                return null;
+                return List.of(launchVelocity(p, 0.0f, WIND_CHARGE_SPEED));
             }
         };
-
     }
 }
-
-
-//SABBYYYYYYYYYYYY GOONEERRRSSSS
