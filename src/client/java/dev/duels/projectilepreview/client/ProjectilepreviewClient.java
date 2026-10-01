@@ -8,7 +8,6 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.resources.Identifier;
-import org.lwjgl.glfw.GLFW;
 
 public final class ProjectilepreviewClient implements ClientModInitializer {
 
@@ -22,8 +21,8 @@ public final class ProjectilepreviewClient implements ClientModInitializer {
     public void onInitializeClient() {
         openConfigKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
                 "key.projectilepreview.open_config",
-                InputConstants.Type.KEYSYM,
-                GLFW.GLFW_KEY_P,
+                InputConstants.Type.KEYBOARD,
+                InputConstants.KEY_P,
                 KEY_CATEGORY
         ));
 

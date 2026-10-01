@@ -27,10 +27,12 @@ public final class AimPreviewRenderer {
         Player player = client.player;
         if (player == null) return;
 
-        ItemStack stack = player.getMainHandItem();
-        if (stack.isEmpty()) return;
-
+        ItemStack stack = player.isUsingItem() ? player.getUseItem() : player.getMainHandItem();
         AimProfiles.Profile profile = AimProfiles.match(player, stack);
+        if (profile == null && !player.isUsingItem()) {
+            stack = player.getOffhandItem();
+            profile = AimProfiles.match(player, stack);
+        }
         if (profile == null) return;
 
         float tickDelta = client.getDeltaTracker().getGameTimeDeltaPartialTick(false);
@@ -52,7 +54,8 @@ public final class AimPreviewRenderer {
                     profile.drag(),
                     steps,
                     profile.stepTime(),
-                    profile.decayBeforeMove()
+                    profile.decayBeforeMove(),
+                    profile.collisionTickOffset()
             );
 
             if (res == null || res.points().size() < 2) continue;

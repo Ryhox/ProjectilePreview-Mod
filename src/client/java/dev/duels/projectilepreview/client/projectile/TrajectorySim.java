@@ -14,13 +14,13 @@ import java.util.List;
 /**
  * Steps the projectile forward tick by tick using the exact vanilla physics.
  * Arrows move first and then decay their velocity; throwables apply gravity
- * and drag before moving (26.2 ThrowableProjectile.tick order).
+ * and drag before moving (26.3 ThrowableProjectile.tick order).
  */
 public final class TrajectorySim {
     private TrajectorySim() {}
 
-    // ProjectileUtil inflates entity hitboxes by 0.3 when testing projectile hits.
-    public static final double ENTITY_HITBOX_PAD = 0.3;
+    // 26.3 increases the collision margin with projectile age, up to 0.3.
+    public static final double ENTITY_HITBOX_PAD = 0.3f;
     private static final double ENTITY_SEARCH_INFLATE = 1.0;
 
     public record Result(List<Vec3> points, HitInfo hit) {}
@@ -42,6 +42,13 @@ public final class TrajectorySim {
             int steps,
             double stepTime,
             boolean decayBeforeMove
+    ) {
+        return simulate(owner, startPos, startVel, gravity, drag, steps, stepTime, decayBeforeMove, 0);
+    }
+
+    public static Result simulate(
+            Entity owner, Vec3 startPos, Vec3 startVel, double gravity, double drag,
+            int steps, double stepTime, boolean decayBeforeMove, int collisionTickOffset
     ) {
         Level world = owner.level();
         if (world == null) return null;
@@ -93,7 +100,7 @@ public final class TrajectorySim {
             Vec3 to = path[i + 1];
 
             // Vanilla clips blocks first, then looks for entities up to the block hit.
-            HitResult blockHit = world.clip(new ClipContext(
+            HitResult blockHit = world.clipIncludingBorder(new ClipContext(
                     from,
                     to,
                     ClipContext.Block.COLLIDER,
@@ -103,7 +110,8 @@ public final class TrajectorySim {
 
             Vec3 segmentEnd = blockHit.getType() != HitResult.Type.MISS ? blockHit.getLocation() : to;
 
-            HitInfo.EntityHit entHit = nearestEntityHit(candidates, from, segmentEnd);
+            double margin = Math.max(0.0f, Math.min(0.3f, (i + collisionTickOffset - 2) / 20.0f));
+            HitInfo.EntityHit entHit = nearestEntityHit(candidates, from, segmentEnd, margin);
             if (entHit != null) {
                 points.add(entHit.pos());
                 finalHit = entHit;
@@ -124,13 +132,13 @@ public final class TrajectorySim {
         return new Result(points, finalHit);
     }
 
-    private static HitInfo.EntityHit nearestEntityHit(List<Entity> candidates, Vec3 from, Vec3 to) {
+    private static HitInfo.EntityHit nearestEntityHit(List<Entity> candidates, Vec3 from, Vec3 to, double margin) {
         Entity best = null;
         Vec3 bestPos = null;
         double bestDist2 = Double.MAX_VALUE;
 
         for (Entity e : candidates) {
-            AABB bb = e.getBoundingBox().inflate(ENTITY_HITBOX_PAD);
+            AABB bb = e.getBoundingBox().inflate(margin);
 
             var opt = bb.clip(from, to);
             if (opt.isEmpty()) continue;

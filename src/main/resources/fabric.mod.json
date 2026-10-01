@@ -3,12 +3,11 @@
   "id": "projectilepreview",
   "version": "${version}",
   "name": "ProjectilePreview",
-  "description": "A Duel Plugin by Ryhox",
+  "description": "Shows predicted projectile flight paths and impact points.",
   "authors": [],
   "contact": {},
-  "license": "All-Rights-Reserved",
-  "icon": "assets/projectilepreview/icon.png",
-  "environment": "*",
+  "license": "MIT",
+  "environment": "client",
   "entrypoints": {
     "fabric-datagen": [
       "dev.duels.projectilepreview.client.ProjectilepreviewDataGenerator"
@@ -31,8 +30,9 @@
     }
   ],
   "depends": {
-    "fabricloader": ">=0.19.3",
+    "fabricloader": ">=${loader_version}",
     "fabric-api": "*",
-    "minecraft": ">=26.2 <26.3"
+    "minecraft": "~${minecraft_version}",
+    "java": ">=25"
   }
 }

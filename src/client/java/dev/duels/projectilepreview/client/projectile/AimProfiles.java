@@ -1,31 +1,31 @@
 package dev.duels.projectilepreview.client.projectile;
 
-import net.minecraft.core.Holder;
-import net.minecraft.core.RegistryAccess;
-import net.minecraft.core.registries.Registries;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.HumanoidArm;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BowItem;
 import net.minecraft.world.item.CrossbowItem;
+import net.minecraft.world.item.EggItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.TridentItem;
-import net.minecraft.world.item.enchantment.Enchantment;
+import net.minecraft.world.item.component.ChargedProjectiles;
+import net.minecraft.world.item.component.Fireworks;
 import net.minecraft.world.item.enchantment.EnchantmentHelper;
-import net.minecraft.world.item.enchantment.Enchantments;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Set;
 
 /**
- * Launch parameters mirroring the vanilla 26.2 item and projectile code exactly,
- * so the predicted path matches where the projectile really lands.
+ * Mean launch parameters from vanilla 26.3. Random shot spread is deliberately
+ * excluded: its server-side random seed cannot be predicted by a client.
  */
 public final class AimProfiles {
     private AimProfiles() {}
@@ -40,6 +40,7 @@ public final class AimProfiles {
     // Speeds and roll offsets from the vanilla item use() methods.
     private static final float BOW_MAX_SPEED = 3.0f;
     private static final float CROSSBOW_SPEED = 3.15f;
+    private static final float CROSSBOW_FIREWORK_SPEED = 1.6f;
     private static final float TRIDENT_SPEED = 2.5f;
     private static final float THROWN_SPEED = 1.5f;
     private static final float XP_BOTTLE_SPEED = 0.7f;
@@ -54,7 +55,7 @@ public final class AimProfiles {
     private static final float MULTISHOT_SPREAD_DEG = 10.0f;
 
     // Per-tick physics from the projectile entity classes.
-    private static final double DEFAULT_DRAG = 0.99;
+    private static final double DEFAULT_DRAG = 0.99f;
     private static final double ARROW_GRAVITY = 0.05;
     private static final double THROWN_GRAVITY = 0.03;
     private static final double POTION_GRAVITY = 0.05;
@@ -70,22 +71,34 @@ public final class AimProfiles {
         Item item = stack.getItem();
 
         if (item instanceof BowItem) {
-            return player.isUsingItem() ? Profiles.BOW : null;
+            return player.isUsingItem() && player.getUseItem() == stack ? Profiles.BOW : null;
         }
 
         if (item instanceof CrossbowItem) {
-            return CrossbowItem.isCharged(stack) ? Profiles.CROSSBOW : null;
+            if (!CrossbowItem.isCharged(stack)) return null;
+            ChargedProjectiles charged = stack.getOrDefault(DataComponents.CHARGED_PROJECTILES, ChargedProjectiles.EMPTY);
+            if (charged.contains(Items.FIREWORK_ROCKET)) {
+                Fireworks fireworks = charged.itemCopies().filter(s -> s.is(Items.FIREWORK_ROCKET))
+                        .findFirst().orElseThrow().get(DataComponents.FIREWORKS);
+                // Vanilla adds 0..11 random ticks. Show only the guaranteed flight.
+                int flightTicks = 10 * (1 + (fireworks == null ? 0 : fireworks.flightDuration()));
+                return crossbowProfile(true, flightTicks);
+            }
+            return Profiles.CROSSBOW;
         }
 
         if (item instanceof TridentItem) {
-            return player.isUsingItem() ? Profiles.TRIDENT : null;
+            return player.isUsingItem() && player.getUseItem() == stack
+                    && !stack.nextDamageWillBreak()
+                    && EnchantmentHelper.getTridentSpinAttackStrength(stack, player) == 0.0f
+                    ? Profiles.TRIDENT : null;
         }
 
         if (item == Items.WIND_CHARGE) return Profiles.WIND;
         if (item == Items.EXPERIENCE_BOTTLE) return Profiles.XP_BOTTLE;
         if (POTIONS.contains(item)) return Profiles.POTION;
         if (item == Items.ENDER_PEARL) return Profiles.PEARL;
-        if (item == Items.SNOWBALL || item == Items.EGG) return Profiles.SNOW_EGG;
+        if (item == Items.SNOWBALL || item instanceof EggItem) return Profiles.SNOW_EGG;
 
         return null;
     }
@@ -96,6 +109,7 @@ public final class AimProfiles {
 
         /** Throwables decay velocity before moving; arrows move first. */
         default boolean decayBeforeMove() { return true; }
+        default int collisionTickOffset() { return 0; }
 
         double drag();
         double gravity();
@@ -123,7 +137,8 @@ public final class AimProfiles {
         Vec3 right = new Vec3(0.0, 1.0, 0.0).cross(fwdYaw).normalize();
         Vec3 up = forward.cross(right).normalize();
 
-        InteractionHand active = p.isUsingItem() ? p.getUsedItemHand() : InteractionHand.MAIN_HAND;
+        InteractionHand active = p.isUsingItem() ? p.getUsedItemHand()
+                : match(p, p.getMainHandItem()) != null ? InteractionHand.MAIN_HAND : InteractionHand.OFF_HAND;
         boolean mainArmRight = (p.getMainArm() == HumanoidArm.RIGHT);
         boolean rightSide = (active == InteractionHand.MAIN_HAND) ? mainArmRight : !mainArmRight;
         double sideSign = rightSide ? 1.0 : -1.0;
@@ -157,24 +172,39 @@ public final class AimProfiles {
     }
 
     // Crossbow arrows rotate the view vector around the up axis and ignore shooter momentum.
-    private static Vec3 crossbowVelocity(Player p, float angleDeg) {
+    private static Vec3 crossbowVelocity(Player p, float angleDeg, float speed) {
         Vec3 up = p.getUpVector(1.0f);
         Vector3f dir = p.getViewVector(1.0f).toVector3f()
                 .rotate(new Quaternionf().setAngleAxis(angleDeg * DEG_TO_RAD, up.x, up.y, up.z));
-        return new Vec3(dir.x(), dir.y(), dir.z()).normalize().scale(CROSSBOW_SPEED);
+        return new Vec3(dir.x(), dir.y(), dir.z()).normalize().scale(speed);
     }
 
-    private static RegistryAccess lastRegistryAccess;
-    private static Holder<Enchantment> multishotHolder;
-
-    // Cached per world join; only touched from the render thread.
-    private static int multishotLevel(Player p, ItemStack stack) {
-        RegistryAccess access = p.registryAccess();
-        if (access != lastRegistryAccess) {
-            multishotHolder = access.lookupOrThrow(Registries.ENCHANTMENT).getOrThrow(Enchantments.MULTISHOT);
-            lastRegistryAccess = access;
-        }
-        return EnchantmentHelper.getItemEnchantmentLevel(multishotHolder, stack);
+    private static Profile crossbowProfile(boolean firework, int flightTicks) {
+        return new Profile() {
+            public Vec3 visualStartPos(Player p, float td) {
+                return handTipPos(p, td, CROSSBOW_HAND_F, CROSSBOW_HAND_S, CROSSBOW_HAND_U);
+            }
+            public boolean decayBeforeMove() { return false; }
+            public int collisionTickOffset() { return firework ? 1 : 0; }
+            public int steps() { return flightTicks; }
+            public double drag() { return firework ? 1.0 : DEFAULT_DRAG; }
+            public double gravity() { return firework ? 0.0 : ARROW_GRAVITY; }
+            public Vec3 startPos(Player p, float td) {
+                return firework ? spawnPos(p, td).add(0.0, SPAWN_EYE_OFFSET - (double) 0.15f, 0.0) : spawnPos(p, td);
+            }
+            public List<Vec3> startVels(Player p, ItemStack s, float td) {
+                int count = s.getOrDefault(DataComponents.CHARGED_PROJECTILES, ChargedProjectiles.EMPTY).size();
+                if (count == 0) return List.of();
+                float step = count == 1 ? 0.0f : 2.0f * MULTISHOT_SPREAD_DEG / (count - 1);
+                float offset = ((count - 1) % 2) * step / 2.0f;
+                List<Vec3> velocities = new ArrayList<>(count);
+                for (int i = 0; i < count; i++) {
+                    float angle = offset + ((i + 1) / 2) * (i % 2 == 0 ? 1 : -1) * step;
+                    velocities.add(crossbowVelocity(p, angle, firework ? CROSSBOW_FIREWORK_SPEED : CROSSBOW_SPEED));
+                }
+                return velocities;
+            }
+        };
     }
 
     private static int useTicks(Player p, ItemStack stack) {
@@ -204,31 +234,7 @@ public final class AimProfiles {
             }
         };
 
-        static final Profile CROSSBOW = new Profile() {
-            public Vec3 visualStartPos(Player p, float td) {
-                return handTipPos(p, td, CROSSBOW_HAND_F, CROSSBOW_HAND_S, CROSSBOW_HAND_U);
-            }
-
-            public boolean decayBeforeMove() { return false; }
-            public int steps() { return ARROW_STEPS; }
-            public double drag() { return DEFAULT_DRAG; }
-            public double gravity() { return ARROW_GRAVITY; }
-
-            public Vec3 startPos(Player p, float td) {
-                return spawnPos(p, td);
-            }
-
-            public List<Vec3> startVels(Player p, ItemStack s, float td) {
-                if (multishotLevel(p, s) > 0) {
-                    return List.of(
-                            crossbowVelocity(p, -MULTISHOT_SPREAD_DEG),
-                            crossbowVelocity(p, 0.0f),
-                            crossbowVelocity(p, MULTISHOT_SPREAD_DEG)
-                    );
-                }
-                return List.of(crossbowVelocity(p, 0.0f));
-            }
-        };
+        static final Profile CROSSBOW = crossbowProfile(false, ARROW_STEPS);
 
         static final Profile TRIDENT = new Profile() {
             public Vec3 visualStartPos(Player p, float td) {
